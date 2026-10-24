@@ -1,0 +1,186 @@
+"""Run one arm over the golden set and write the results as they arrive.
+
+A real local run takes hours (a 7B model answers in tens of seconds), so the runner is built to
+survive being stopped: every scored question is appended to the run file and flushed immediately,
+and a rerun with ``resume=True`` skips the questions already there.
+
+Three rules protect the measurement:
+
+- The reference result is recomputed at eval time, and its digest must match the frozen
+  ``expected_digest``. All questions are checked *before* the first model call, so a drifted
+  warehouse costs nothing instead of costing a run.
+- A provider failure (no key, unreachable, replay miss) propagates and stops the run. It is never
+  scored as a wrong answer, which would quietly lower an arm's accuracy for infrastructure reasons.
+- The explainer is off by default: EX measures the SQL. Explanation quality is measured separately.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import hashlib
+import json
+from collections.abc import Sequence
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+import duckdb
+
+from ._vendor.results import ResultSet
+from .golden import digest, reference_result
+from .models import ARMS, EvalRow, GoldenQuestion
+
+
+class GoldenDriftError(RuntimeError):
+    """A reference answer no longer matches its frozen digest. The run is aborted."""
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def meta_path(out_path: Path) -> Path:
+    """Sidecar describing a run file: ``arm.jsonl`` -> ``arm.jsonl.meta.json``."""
+    return out_path.with_name(out_path.name + ".meta.json")
+
+
+def golden_sha256(questions: Sequence[GoldenQuestion], golden_path: Path | None = None) -> str:
+    """Hash of the golden file when its path is known, else of the questions' canonical JSON."""
+    if golden_path is not None and Path(golden_path).exists():
+        return hashlib.sha256(Path(golden_path).read_bytes()).hexdigest()
+    blob = json.dumps([q.as_dict() for q in questions], sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def read_rows(path: Path) -> list[EvalRow]:
+    """EvalRows from a run file; blank lines are ignored."""
+    rows: list[EvalRow] = []
+    if not path.exists():
+        return rows
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            rows.append(EvalRow.from_dict(json.loads(line)))
+    return rows
+
+
+def expected_results(
+    questions: Sequence[GoldenQuestion], con: duckdb.DuckDBPyConnection
+) -> dict[str, ResultSet]:
+    """Reference results for every question; raises `GoldenDriftError` if any digest moved."""
+    out: dict[str, ResultSet] = {}
+    drifted: list[str] = []
+    for q in questions:
+        result = reference_result(con, q)
+        out[q.qid] = result
+        if q.expected_digest is not None and digest(result, q.order_matters) != q.expected_digest:
+            drifted.append(q.qid)
+    if drifted:
+        raise GoldenDriftError(
+            "golden drift: the reference result no longer matches its frozen digest for "
+            + ", ".join(drifted)
+            + ". The warehouse or a reference query changed; re-check with `analyst golden`, "
+            "and re-freeze only if the change is intended (that invalidates earlier runs)."
+        )
+    return out
+
+
+def run_arm(
+    questions: Sequence[GoldenQuestion],
+    provider: Any,
+    con: duckdb.DuckDBPyConnection,
+    *,
+    arm: str,
+    model_name: str,
+    out_path: Path,
+    traces_path: Path | None = None,
+    explain: bool = False,
+    resume: bool = True,
+    golden_path: Path | None = None,
+) -> list[EvalRow]:
+    """Answer every question under ``arm`` and return the scored rows (resumed ones included)."""
+    from . import loop
+    from .score import classify
+
+    if arm not in ARMS:
+        raise ValueError(f"unknown arm {arm!r}; expected one of {sorted(ARMS)}")
+    max_attempts = ARMS[arm]
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if traces_path is not None:
+        traces_path = Path(traces_path)
+        traces_path.parent.mkdir(parents=True, exist_ok=True)
+
+    expected = expected_results(questions, con)
+
+    done: dict[str, EvalRow] = {}
+    if resume:
+        for row in read_rows(out_path):
+            if row.arm != arm:
+                raise ValueError(
+                    f"{out_path} holds arm {row.arm} rows; refusing to resume it as arm {arm}"
+                )
+            done[row.qid] = row
+    else:
+        out_path.write_text("", encoding="utf-8")
+        if traces_path is not None:
+            traces_path.write_text("", encoding="utf-8")
+
+    meta_file = meta_path(out_path)
+    started = _now()
+    if resume and meta_file.exists():
+        with contextlib.suppress(json.JSONDecodeError, OSError):
+            started = json.loads(meta_file.read_text(encoding="utf-8")).get("started_utc", started)
+    meta: dict[str, Any] = {
+        "model": model_name,
+        "arm": arm,
+        "max_attempts": max_attempts,
+        "explain": explain,
+        "golden_sha256": golden_sha256(questions, golden_path),
+        "questions": len(questions),
+        "resumed_rows": len(done),
+        "unfrozen_questions": sum(1 for q in questions if q.expected_digest is None),
+        "started_utc": started,
+        "finished_utc": None,
+    }
+    meta_file.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8", newline="\n")
+
+    reset = getattr(provider, "reset", None)
+    with out_path.open("a", encoding="utf-8", newline="\n") as out:
+        traces_file = traces_path.open("a", encoding="utf-8", newline="\n") if traces_path else None
+        try:
+            for q in questions:
+                if q.qid in done:
+                    continue
+                if callable(reset):
+                    reset()
+                trace = loop.answer(
+                    q.question, provider, con, max_attempts=max_attempts, explain=explain
+                )
+                kind = classify(expected[q.qid], trace, q.order_matters)
+                row = EvalRow(
+                    qid=q.qid,
+                    arm=arm,
+                    attempts=trace.attempts,
+                    ok=kind is None,
+                    outcome=trace.outcome,
+                    failure_kind=kind,
+                    llm_calls=trace.llm_calls,
+                    prompt_tokens=trace.prompt_tokens,
+                    completion_tokens=trace.completion_tokens,
+                    latency_s=round(trace.latency_s, 6),
+                    pattern=q.pattern,
+                )
+                out.write(json.dumps(row.as_dict(), ensure_ascii=False) + "\n")
+                out.flush()
+                if traces_file is not None:
+                    record = {"qid": q.qid, "arm": arm, **trace.as_dict()}
+                    traces_file.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    traces_file.flush()
+                done[q.qid] = row
+        finally:
+            if traces_file is not None:
+                traces_file.close()
+
+    meta["finished_utc"] = _now()
+    meta_file.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8", newline="\n")
+    return [done[q.qid] for q in questions]
