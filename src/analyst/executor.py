@@ -9,6 +9,7 @@ here relies on it: a write that slipped past the guard would still be refused by
 
 from __future__ import annotations
 
+import re
 import threading
 from pathlib import Path
 
@@ -54,7 +55,7 @@ def run(
     `ExecutionError`, so a caller can tell "the SQL is unsafe" from "the SQL did not work".
     """
     assert_read_only(sql)
-    wrapped = wrap_with_limit(sql, clamp_limit(limit))
+    wrapped = wrap_with_limit(_strip_terminator(sql), clamp_limit(limit))
     timed_out = threading.Event()
 
     def interrupt() -> None:
@@ -72,3 +73,17 @@ def run(
         raise ExecutionError(str(exc)[:_MAX_ERROR_CHARS]) from exc
     finally:
         timer.cancel()
+
+
+# A final `;` followed only by whitespace or comments. The guard has already proved there is
+# exactly one statement, so this can only be its terminator.
+_TERMINATOR = re.compile(r";(?:\s|--[^\n]*(?:\n|$)|/\*.*?\*/)*$", re.DOTALL)
+
+
+def _strip_terminator(sql: str) -> str:
+    """Drop a trailing `;` (and any comments after it) before the query is wrapped in a subquery.
+
+    The vendored `wrap_with_limit` strips a bare final `;`, but not one followed by a comment:
+    ``SELECT 1; -- note`` passed the guard and EXPLAIN, then failed at run time inside the wrapper.
+    """
+    return _TERMINATOR.sub("", sql.rstrip())

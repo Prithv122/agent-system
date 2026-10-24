@@ -103,3 +103,16 @@ def test_engine_error_becomes_short_execution_error(con) -> None:
     with pytest.raises(ExecutionError) as info:
         run(con, "SELECT CAST('abc' AS INTEGER)")
     assert len(str(info.value)) <= 300
+
+
+def test_trailing_semicolon_with_comment_runs(warehouse_path) -> None:
+    con = open_readonly(warehouse_path)
+    try:
+        for sql in (
+            "SELECT COUNT(*) FROM orders; -- note",
+            "SELECT COUNT(*) FROM orders /* x */ ;",
+        ):
+            assert run(con, sql).rows == ((3000,),)
+        assert run(con, "SELECT ';' AS s").rows == ((";",),)
+    finally:
+        con.close()
