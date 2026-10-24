@@ -18,6 +18,9 @@ analyst = "analyst.cli:main"
 secrets = [
     "keyring>=25",
 ]
+excel = [
+    "openpyxl>=3.1",
+]
 
 [build-system]
 requires = ["hatchling"]
