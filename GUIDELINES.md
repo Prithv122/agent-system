@@ -27,7 +27,7 @@ Vendored code is pinned in `src/analyst/_vendor/__init__.py`.
 | `llm.py` | named models -> cached provider stack (`--model`, `--replay`) |
 | `executor.py` | `open_readonly(path)`, `build_db(path)`, `run(con, sql, *, limit, timeout_s)` |
 | `validator.py` | `validate(con, sql) -> str | None` (guard, then `EXPLAIN`); `GuardRefusal` |
-| `schema.py` | `schema_text(con)` from `information_schema` |
+| `schema.py` | `schema_text(con, value_hints=)`, `value_hint_set` (the mechanical hint rule) |
 | `roles.py` | writer and explainer prompts; `parse_writer_reply(text) -> WriterAction` |
 | `loop.py` | `answer(question, provider, con, *, max_attempts, explain) -> Trace` |
 | `fake.py` | scripted providers for tests and `--fake` (never a published number) |

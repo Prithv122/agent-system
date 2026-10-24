@@ -94,9 +94,16 @@ Rows and columns are what the reference returns on the seeded warehouse. "Recipe
   (largest is 55), contains no clock functions, and returns identical results on two runs.
 - The project's own validator and golden-set check (guard, `EXPLAIN`, determinism, row cap) report
   no problems for all 36 queries.
-- **Double-checked: all 36.** Each reference was re-derived by an independent plain-Python
-  computation over the raw tables (own loops, sets and sorting, no shared SQL) and compared with
-  the same tolerance rule as the scorer. All 36 matched.
+- **Double-checked: all 36, reproducibly.** `golden/crosscheck.py` re-derives every reference by
+  plain Python over the raw tables (own loops, sets and sorting, no shared SQL) and compares with
+  the scorer's own equality rule; it is part of the test suite. 36/36 match, including the revised
+  sessionization-1/-2.
+- **Non-degenerate:** `analyst golden` flags a reference whose result is all NULL, all zero or
+  identical rows; none of the 36 is.
+- **Scorer audit:** `golden/audit_scorer.py` checks the equality rule on 575 rewritten variants of
+  the 36 real results (re-typed numbers, dates as midnight timestamps, shuffled rows, perturbed and
+  dropped cells, swapped columns, NULL changes). Every expected-equal variant was equal and every
+  expected-different one was different.
 - **Tie sensitivity** (tie_safe_ranking-1, -2, -3): re-running with the opposite event-id
   tie-break changes the result for all three, so these questions do detect an unsafe ranking.
 - **Rounding**: for lag_lead-2, -3, date_spine-3, sessionization-2, pivot-3, conditional_aggregation-1
@@ -127,9 +134,10 @@ Rows and columns are what the reference returns on the seeded warehouse. "Recipe
   within the question (but the question is still scored all-or-nothing).
 - **gaps_and_islands-2 (55 rows) and pivot-2 (12 x 9)**: large result sets; one wrong cell fails the
   question. Intended, but they may be harsher than their "medium" tag suggests.
-- **lag_lead-1**: the first row's gap is NULL; the scorer must treat NULL equal to NULL.
-- **Date and month outputs**: questions say "as a date" or "as text in YYYY-MM form". If the scorer
-  compares a DATE with a string literally, an agent returning the other form fails; confirm the
-  scorer's normalisation is acceptable.
+- **lag_lead-1**: the first row's gap is NULL; the scorer treats NULL as equal only to NULL
+  (verified by the scorer audit).
+- **Date and month outputs**: a DATE equals the same day as a midnight TIMESTAMP or as ISO text
+  (verified). A question asking for "text in YYYY-MM form" is not met by a full date
+  (`2025-03-01`): the question fixes the form, so that stays wrong by design.
 - **pivot-1/-2/-3 vs conditional_aggregation-1/-2/-3**: they overlap in technique by design (the
   recipes do too); the pivot questions only differ in producing a wide, fixed-column result.
