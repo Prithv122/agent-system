@@ -55,7 +55,7 @@ RESULT_CAP = 1000
 _REQUIRED = ("qid", "question", "pattern", "reference_sql")
 _ALLOWED = frozenset(
     {"qid", "question", "pattern", "reference_sql", "order_matters", "tags", "example"}
-    | {"expected_digest"}
+    | {"column_order_matters", "expected_digest"}
 )
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
@@ -83,7 +83,7 @@ def _parse_line(number: int, line: str) -> GoldenQuestion:
             raise GoldenError(f"{where}: {key} must be a non-empty string")
     if data["pattern"] not in PATTERNS:
         raise GoldenError(f"{where}: unknown pattern {data['pattern']!r}")
-    for key in ("order_matters", "example"):
+    for key in ("order_matters", "example", "column_order_matters"):
         if key in data and not isinstance(data[key], bool):
             raise GoldenError(f"{where}: {key} must be true or false")
     if "tags" in data and not (

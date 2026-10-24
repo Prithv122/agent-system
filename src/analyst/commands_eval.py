@@ -16,8 +16,8 @@ from .cli import DEFAULT_RUNS
 from .executor import open_readonly
 from .golden import GoldenError, check, freeze, load
 from .models import ARMS
-from .report import ReportError, load_runs_with_meta, render
-from .runner import GoldenDriftError, run_arm
+from .report import ReportError, load_runs_full, render
+from .runner import GoldenDriftError, ResumeMismatchError, RunLockedError, run_arm
 
 
 def _fail(message: str) -> int:
@@ -59,6 +59,11 @@ def default_out(arm: str, model_name: str, runs_dir: Path = DEFAULT_RUNS) -> Pat
 
 
 def cmd_eval(args: argparse.Namespace) -> int:
+    """Run one arm. Run the arms (A, then B, then C) one after another, never in parallel: arm A's
+    first reply for each question is cached once and served to B and C, and a run holds the cache's
+    ``.run.lock`` so a second run refuses to start. ``--out`` may be a directory, in which case the
+    rows go to ``<dir>/<model>/arm<X>.jsonl``.
+    """
     try:
         questions = load(args.golden)
     except (FileNotFoundError, GoldenError) as exc:
@@ -68,20 +73,23 @@ def cmd_eval(args: argparse.Namespace) -> int:
     if not questions:
         return _fail("no questions to run")
 
+    lock_dir = None  # fake runs touch no cache, so there is nothing to protect
     if args.fake:
         from .fake import GoldenFakeProvider
 
         provider = GoldenFakeProvider(questions, fault_plan(questions))
         model_name = "fake"
     else:
-        from .llm import build_provider
+        from .llm import build_provider, default_cache_dir
 
         provider = build_provider(args.model, offline=args.replay)
         model_name = args.model
+        lock_dir = default_cache_dir()
 
     out = args.out if args.out is not None else default_out(args.arm, model_name)
-    if out.is_dir():
-        out = out / f"arm{args.arm}.jsonl"
+    if out.is_dir() or out.suffix == "":
+        # A directory: runs from different models never share a file.
+        out = out / model_name / f"arm{args.arm}.jsonl"
     traces = out.with_name(out.name.removesuffix(".jsonl") + ".traces.jsonl")
 
     try:
@@ -98,8 +106,10 @@ def cmd_eval(args: argparse.Namespace) -> int:
             out_path=out,
             traces_path=traces,
             golden_path=args.golden,
+            value_hints=getattr(args, "value_hints", False),
+            lock_dir=lock_dir,
         )
-    except (ProviderError, GoldenDriftError) as exc:
+    except (ProviderError, GoldenDriftError, ResumeMismatchError, RunLockedError) as exc:
         return _fail(str(exc))
     finally:
         con.close()
@@ -115,8 +125,8 @@ def cmd_eval(args: argparse.Namespace) -> int:
 
 def cmd_report(args: argparse.Namespace) -> int:
     try:
-        runs, models = load_runs_with_meta(args.runs)
-        text = render(runs, seed=args.seed, models=models)
+        runs, models, metas = load_runs_full(args.runs)
+        text = render(runs, seed=args.seed, models=models, metas=metas)
     except ReportError as exc:
         return _fail(str(exc))
     print(text, end="")

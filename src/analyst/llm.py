@@ -8,6 +8,7 @@ network call. Switching between a local and a hosted model is a change of name, 
 from __future__ import annotations
 
 import os
+import tomllib
 from pathlib import Path
 
 from ._vendor.cache import JsonCache
@@ -27,8 +28,39 @@ MODELS: dict[str, tuple[str, str]] = {
     "nemotron-super": ("openrouter", "nvidia/nemotron-3-super-120b-a12b:free"),
     "haiku": ("anthropic", "claude-haiku-4-5"),
 }
-DEFAULT_MODEL = "qwen-7b"
-CACHE_DIR = Path(os.environ.get("ANALYST_CACHE_DIR", ".cache/llm"))
+#: The primary model proposed in EVAL_PLAN.md section 3.
+DEFAULT_MODEL = "qwen-coder-7b"
+PROJECT_NAME = "agent-system"
+
+
+def project_root(start: Path | None = None) -> Path | None:
+    """The nearest directory above ``start`` (default: the cwd) whose ``pyproject.toml`` names
+    this project, or None. Other projects' ``pyproject.toml`` files are skipped."""
+    here = (start or Path.cwd()).resolve()
+    for folder in (here, *here.parents):
+        candidate = folder / "pyproject.toml"
+        if candidate.is_file():
+            try:
+                name = tomllib.loads(candidate.read_text(encoding="utf-8"))["project"]["name"]
+            except (OSError, KeyError, tomllib.TOMLDecodeError):
+                continue
+            if name == PROJECT_NAME:
+                return folder
+    return None
+
+
+def default_cache_dir() -> Path:
+    """Where replies are cached: ``ANALYST_CACHE_DIR`` if set, else ``.cache/llm`` under the
+    project root, so a run started from any subfolder (or after a fresh clone) finds the same
+    cache. Outside the project it falls back to the current directory."""
+    override = os.environ.get("ANALYST_CACHE_DIR")
+    if override:
+        return Path(override)
+    return (project_root() or Path.cwd()) / ".cache" / "llm"
+
+
+#: Resolved when this module is imported; code that needs the live value calls `default_cache_dir`.
+CACHE_DIR = default_cache_dir()
 
 
 def build_provider(
@@ -46,4 +78,4 @@ def build_provider(
         inner = OpenRouterProvider(model_id)
     else:
         inner = AnthropicProvider(model_id)
-    return CachedProvider(inner, JsonCache(cache_dir or CACHE_DIR), offline=offline)
+    return CachedProvider(inner, JsonCache(cache_dir or default_cache_dir()), offline=offline)

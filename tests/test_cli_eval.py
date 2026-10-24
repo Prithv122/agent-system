@@ -119,3 +119,152 @@ def test_missing_database_and_report_errors_exit_2(
     assert main(["golden", "--golden", str(FIXTURE), "--db", str(tmp_path / "none.duckdb")]) == 2
     assert main(["report", str(tmp_path / "none.jsonl")]) == 2
     assert "error:" in capsys.readouterr().err
+
+
+# H2: output location, resume and report refusals ------------------------------------------------
+
+
+def test_out_directory_gets_model_and_arm_subpath(tmp_path: Path, warehouse_path: Path) -> None:
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    assert run_eval("B", warehouse_path, runs, "--limit", "2") == 0
+    assert (runs / "fake" / "armB.jsonl").exists()
+    assert (runs / "fake" / "armB.traces.jsonl").exists()
+    # A path without a .jsonl suffix is a directory even before it exists.
+    fresh = tmp_path / "newdir"
+    assert run_eval("A", warehouse_path, fresh, "--limit", "2") == 0
+    assert (fresh / "fake" / "armA.jsonl").exists()
+
+
+def test_two_models_into_one_directory_do_not_share_files(
+    tmp_path: Path, warehouse_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from analyst import llm
+    from analyst.fake import GoldenFakeProvider
+    from analyst.golden import load
+
+    questions = load(FIXTURE)
+    monkeypatch.setattr(llm, "build_provider", lambda model, **_: GoldenFakeProvider(questions))
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    base = ["eval", "--arm", "A", "--golden", str(FIXTURE), "--db", str(warehouse_path)]
+    for model in ("qwen-7b", "llama-3b"):
+        assert main([*base, "--model", model, "--out", str(runs), "--limit", "1"]) == 0
+    assert (runs / "qwen-7b" / "armA.jsonl").exists()
+    assert (runs / "llama-3b" / "armA.jsonl").exists()
+
+
+def test_resume_with_a_changed_setup_exits_2(
+    tmp_path: Path, warehouse_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = tmp_path / "armA.jsonl"
+    assert run_eval("A", warehouse_path, out, "--limit", "2") == 0
+    before = out.read_bytes()
+    capsys.readouterr()
+    assert run_eval("A", warehouse_path, out, "--value-hints") == 2
+    assert "value_hints" in capsys.readouterr().err
+    assert out.read_bytes() == before
+
+
+def test_report_refuses_arms_from_different_models(
+    tmp_path: Path, warehouse_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    a, b = tmp_path / "armA.jsonl", tmp_path / "armB.jsonl"
+    assert run_eval("A", warehouse_path, a) == 0
+    assert run_eval("B", warehouse_path, b) == 0
+    meta = b.with_name(b.name + ".meta.json")
+    data = json.loads(meta.read_text(encoding="utf-8"))
+    data["model"] = "qwen-7b"
+    meta.write_text(json.dumps(data), encoding="utf-8")
+    capsys.readouterr()
+    assert main(["report", str(a), str(b)]) == 2
+    assert "model" in capsys.readouterr().err
+
+
+def test_report_warns_about_unfrozen_questions(
+    tmp_path: Path, warehouse_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rows = [json.loads(x) for x in FIXTURE.read_text(encoding="utf-8").splitlines()]
+    for r in rows:
+        r.pop("expected_digest", None)
+    golden = tmp_path / "g.jsonl"
+    golden.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    out = tmp_path / "armA.jsonl"
+    base = ["eval", "--arm", "A", "--fake", "--golden", str(golden), "--db", str(warehouse_path)]
+    assert main([*base, "--out", str(out)]) == 0
+    capsys.readouterr()
+    assert main(["report", str(out)]) == 0
+    text = capsys.readouterr().out
+    assert "WARNING" in text and "drift protection" in text
+
+
+# M7: the run lock ---------------------------------------------------------------------------------
+
+
+def test_eval_refuses_while_the_cache_is_locked(
+    tmp_path: Path,
+    warehouse_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / ".run.lock").write_text("held\n", encoding="utf-8")
+    monkeypatch.setenv("ANALYST_CACHE_DIR", str(cache))
+    out = tmp_path / "armA.jsonl"
+    code = main(
+        [
+            *["eval", "--arm", "A", "--model", "qwen-7b", "--replay"],
+            *["--golden", str(FIXTURE), "--db", str(warehouse_path), "--out", str(out)],
+        ]
+    )
+    assert code == 2
+    err = capsys.readouterr().err
+    assert ".run.lock" in err and "delete" in err
+    assert not out.exists()
+
+
+# value-hints flag ---------------------------------------------------------------------------------
+
+
+def test_value_hints_flag_is_off_by_default_on_ask_eval_and_safety() -> None:
+    from analyst.cli import build_parser
+
+    parser = build_parser()
+    commands = {
+        "ask": ["ask", "q?"],
+        "eval": ["eval", "--arm", "A"],
+        "safety": ["safety"],
+    }
+    for argv in commands.values():
+        assert parser.parse_args(argv).value_hints is False
+        assert parser.parse_args([*argv, "--value-hints"]).value_hints is True
+
+
+def test_eval_passes_value_hints_through_and_records_them(
+    tmp_path: Path, warehouse_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from analyst import loop
+
+    seen: list[dict] = []
+    real = loop.answer
+
+    def spy(question, provider, con, *, max_attempts, explain, **extra):
+        seen.append(extra)
+        return real(question, provider, con, max_attempts=max_attempts, explain=explain)
+
+    monkeypatch.setattr(loop, "answer", spy)
+    out = tmp_path / "armA.jsonl"
+    assert run_eval("A", warehouse_path, out, "--limit", "2", "--value-hints") == 0
+    assert seen == [{"value_hints": True}] * 2
+    meta = json.loads(out.with_name(out.name + ".meta.json").read_text(encoding="utf-8"))
+    assert meta["value_hints"] is True
+
+
+def test_eval_help_says_arms_run_sequentially() -> None:
+    from analyst.cli import build_parser
+
+    sub = next(a for a in build_parser()._actions if isinstance(getattr(a, "choices", None), dict))
+    text = sub.choices["eval"].format_help().lower()
+    assert "sequentially" in text
+    assert "cached once" in " ".join(text.split())

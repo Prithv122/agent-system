@@ -6,7 +6,14 @@ from pathlib import Path
 import pytest
 
 from analyst.models import EvalRow
-from analyst.report import ReportError, load_runs, load_runs_with_meta, percentile, render
+from analyst.report import (
+    ReportError,
+    load_runs,
+    load_runs_full,
+    load_runs_with_meta,
+    percentile,
+    render,
+)
 
 
 def row(qid: str, arm: str, ok: bool, *, pattern: str = "ranking", latency: float = 1.0, **kw):
@@ -149,3 +156,88 @@ def test_load_runs_rejects_incomparable_files(tmp_path: Path) -> None:
 def test_single_arm_report_has_no_pairs() -> None:
     text = render({"A": hand_made()["A"]}, seed=1)
     assert "Only one arm present" in text
+
+
+# H2: refuse to compare arms from different setups, and warn about weak runs ----------------------
+
+
+def write_meta(path: Path, **fields: object) -> None:
+    meta = {"model": "m", "golden_sha256": "g" * 64, "finished_utc": "2026-10-25T10:00:00+00:00"}
+    meta.update(fields)
+    path.with_name(path.name + ".meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+
+def two_arm_files(tmp_path: Path, **b_meta: object) -> list[Path]:
+    runs = hand_made()
+    a = write_run(tmp_path / "armA.jsonl", runs["A"])
+    b = write_run(tmp_path / "armB.jsonl", runs["B"])
+    write_meta(a)
+    write_meta(b, **b_meta)
+    return [a, b]
+
+
+def test_arms_from_different_models_are_not_compared(tmp_path: Path) -> None:
+    with pytest.raises(ReportError, match="model"):
+        load_runs(two_arm_files(tmp_path, model="other"))
+
+
+def test_arms_from_different_golden_files_are_not_compared(tmp_path: Path) -> None:
+    with pytest.raises(ReportError, match="golden_sha256"):
+        load_runs(two_arm_files(tmp_path, golden_sha256="h" * 64))
+
+
+@pytest.mark.parametrize("field", ["value_hints", "explain"])
+def test_arms_with_a_different_prompt_or_explainer_setting_are_not_compared(
+    tmp_path: Path, field: str
+) -> None:
+    files = two_arm_files(tmp_path, **{field: True})
+    write_meta(files[0], **{field: False})
+    with pytest.raises(ReportError, match=field):
+        load_runs(files)
+
+
+def test_matching_metas_load_and_missing_metas_are_tolerated(tmp_path: Path) -> None:
+    runs, models, metas = load_runs_full(two_arm_files(tmp_path))
+    assert set(runs) == {"A", "B"}
+    assert models == {"A": "m", "B": "m"}
+    assert metas["A"]["golden_sha256"] == "g" * 64
+    plain = [
+        write_run(tmp_path / "x.jsonl", hand_made()["A"]),
+        write_run(tmp_path / "y.jsonl", hand_made()["B"]),
+    ]
+    assert set(load_runs(plain)) == {"A", "B"}
+
+
+def test_incomplete_and_unfrozen_runs_get_a_visible_warning() -> None:
+    clean = render(hand_made(), seed=1, metas={"A": {"finished_utc": "t"}, "B": {}})
+    assert "WARNING" not in clean
+    text = render(
+        hand_made(),
+        seed=1,
+        metas={
+            "A": {"finished_utc": None, "unfrozen_questions": 0},
+            "B": {"finished_utc": "t", "unfrozen_questions": 4},
+        },
+    )
+    warnings = [line for line in text.splitlines() if "WARNING" in line]
+    assert len(warnings) == 2
+    assert "incomplete" in warnings[0] and "A" in warnings[0]
+    assert "drift protection" in warnings[1] and "B" in warnings[1]
+
+
+def test_report_counts_passes_that_relied_on_column_permutation() -> None:
+    runs = hand_made()
+    runs["B"] = [row(r.qid, "B", True, column_mapping_used=i < 3) for i, r in enumerate(runs["B"])]
+    text = render(runs, seed=1)
+    b_line = next(x for x in text.splitlines() if x.startswith("| B |"))
+    assert [c.strip() for c in b_line.strip("|").split("|")][9] == "3"
+    assert "3 of 10" in text
+    a_line = next(x for x in text.splitlines() if x.startswith("| A |"))
+    assert [c.strip() for c in a_line.strip("|").split("|")][9] == "0"
+
+
+def test_latency_label_says_model_time_only() -> None:
+    text = render(hand_made(), seed=1)
+    assert "model time only" in text
+    assert "engine" in text  # says why: engine steps record 0
+    assert "median model latency s" in text

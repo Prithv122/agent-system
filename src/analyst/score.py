@@ -19,14 +19,23 @@ compared as text, so a DATE and a VARCHAR holding the same ISO string are equal 
 One temporal rule on top: a TIMESTAMP at exactly midnight compares as its date. DuckDB's
 ``date_trunc`` returns a TIMESTAMP even for a DATE input, so a correct monthly answer arrives as
 ``2024-03-01 00:00:00`` against a reference ``2024-03-01``; the value is the same day, and only the
-type differs. Booleans are tagged so True never equals 1.
+type differs. The same holds for ``TIMESTAMP WITH TIME ZONE`` (``TIMESTAMPTZ``) at midnight UTC
+(``2024-03-01 00:00:00+00:00``, ``...+00`` or a trailing ``Z``); a TIMESTAMPTZ at midnight in any
+other offset is a different instant from that date and stays a distinct value.
+Booleans are tagged so True never equals 1.
 
-**Column order is not part of the answer.** "Values only" is read as: the same set of columns,
-in any order. If the actual result has the same number of columns, we look for a mapping of actual
-columns onto expected columns (candidates come from matching per-column value multisets, and every
-candidate mapping is then verified row by row). ``SELECT a, b`` and ``SELECT b, a`` are therefore
-equal. An extra or a missing column is always a mismatch. This is an interpretation of the brief,
+**Column order is not part of the answer, unless the question fixes it.** "Values only" is read as:
+the same set of columns, in any order. If the actual result has the same number of columns, we
+look for a mapping of actual columns onto expected columns (candidates come from matching
+per-column value multisets, and every candidate mapping is then verified row by row).
+``SELECT a, b`` and ``SELECT b, a`` are therefore equal.
+An extra or a missing column is always a mismatch. This is an interpretation of the brief,
 chosen because question wording rarely fixes column order; it is applied identically to every arm.
+A permutation can also accept a mislabelled answer (revenue and cumulative revenue swapped), so a
+golden question that names its columns in a fixed order sets ``column_order_matters``: columns are
+then compared by position only. When a pass needed a non-identity mapping, `compare_results` says
+so and the runner records it (``EvalRow.column_mapping_used``), so a report shows how many passes
+relied on the permutation rule.
 
 Digests (`golden.digest`) are built from `normalize`, with numbers rendered at 9 significant digits
 so a frozen digest and an equality check see the same canonical values.
@@ -84,6 +93,7 @@ NUMERIC_TYPES = frozenset(
 MAX_MAPPINGS = 5_000
 
 _PARAMS = re.compile(r"\(.*\)")
+_MIDNIGHT_UTC = re.compile(r"^(\d{4}-\d{2}-\d{2})[ T]00:00:00(?:\.0+)?(?:Z|[+-]00(?::?00)?)$")
 
 Value = Any  # None | Decimal | str | tuple
 
@@ -120,8 +130,12 @@ def _normalize_value(value: Any, type_name: str) -> Value:
     if isinstance(value, list | tuple):
         return tuple(_normalize_value(v, "") for v in value)
     text = value if isinstance(value, str) else str(value)
-    if base.upper().startswith("TIMESTAMP") and text.endswith(" 00:00:00"):
-        return text[: -len(" 00:00:00")]
+    if base.upper().startswith("TIMESTAMP"):
+        if text.endswith(" 00:00:00"):
+            return text[: -len(" 00:00:00")]
+        match = _MIDNIGHT_UTC.match(text)
+        if match and ("TIME ZONE" in base.upper() or base.upper() == "TIMESTAMPTZ"):
+            return match.group(1)
     return text
 
 
@@ -255,25 +269,45 @@ def _candidate_mappings(
     yield from extend(0, ())
 
 
-def results_equal(expected: ResultSet, actual: ResultSet, order_matters: bool = False) -> bool:
-    """Do two results hold the same values? See the module docstring for the exact rule."""
+def compare_results(
+    expected: ResultSet,
+    actual: ResultSet,
+    order_matters: bool = False,
+    *,
+    column_order_matters: bool = False,
+) -> tuple[bool, bool]:
+    """``(equal, mapping_used)``: do two results hold the same values, and did that need columns
+    reordered? With ``column_order_matters`` the columns are compared by position only."""
     width = len(expected.columns)
     if width != len(actual.columns) or len(expected.rows) != len(actual.rows):
-        return False
+        return False, False
     exp_rows, act_rows = normalize(expected), normalize(actual)
     if not exp_rows:
-        return True
+        return True, False
     identity = tuple(range(width))
     if _rows_equal(exp_rows, act_rows, order_matters):
-        return True
-    if width < 2:
-        return False
+        return True, False
+    if width < 2 or column_order_matters:
+        return False, False
     for mapping in _candidate_mappings(exp_rows, act_rows, width):
         if mapping == identity:
             continue  # already tried above
         if _rows_equal(exp_rows, _permute(act_rows, mapping), order_matters):
-            return True
-    return False
+            return True, True
+    return False, False
+
+
+def results_equal(
+    expected: ResultSet,
+    actual: ResultSet,
+    order_matters: bool = False,
+    *,
+    column_order_matters: bool = False,
+) -> bool:
+    """Do two results hold the same values? See the module docstring for the exact rule."""
+    return compare_results(
+        expected, actual, order_matters, column_order_matters=column_order_matters
+    )[0]
 
 
 _OUTCOME_KIND = {
@@ -284,22 +318,47 @@ _OUTCOME_KIND = {
 }
 
 
-def classify(expected: ResultSet, trace: Trace, order_matters: bool = False) -> str | None:
-    """Failure kind for a trace against the reference result, or None when it is correct."""
+def grade(
+    expected: ResultSet,
+    trace: Trace,
+    order_matters: bool = False,
+    *,
+    column_order_matters: bool = False,
+) -> tuple[str | None, bool]:
+    """``(failure kind or None, mapping_used)`` for a trace against the reference result.
+
+    ``mapping_used`` is only ever true for a correct answer that needed its columns reordered.
+    """
     if trace.outcome in _OUTCOME_KIND:
-        return _OUTCOME_KIND[trace.outcome]
+        return _OUTCOME_KIND[trace.outcome], False
     actual = trace.result
     if actual is None:  # outcome "ok" with nothing to compare: the writer never produced a result
-        return "no_sql"
-    if results_equal(expected, actual, order_matters):
-        return None
+        return "no_sql", False
+    equal, mapped = compare_results(
+        expected, actual, order_matters, column_order_matters=column_order_matters
+    )
+    if equal:
+        return None, mapped
     if len(actual.columns) != len(expected.columns):
-        return "wrong_columns"
+        return "wrong_columns", False
     if len(actual.rows) != len(expected.rows):
-        return "wrong_grain"
-    if order_matters and results_equal(expected, actual, order_matters=False):
-        return "wrong_order"
-    return "wrong_values"
+        return "wrong_grain", False
+    if order_matters and results_equal(
+        expected, actual, order_matters=False, column_order_matters=column_order_matters
+    ):
+        return "wrong_order", False
+    return "wrong_values", False
+
+
+def classify(
+    expected: ResultSet,
+    trace: Trace,
+    order_matters: bool = False,
+    *,
+    column_order_matters: bool = False,
+) -> str | None:
+    """Failure kind for a trace against the reference result, or None when it is correct."""
+    return grade(expected, trace, order_matters, column_order_matters=column_order_matters)[0]
 
 
 def number_text(value: Decimal) -> str:
@@ -312,6 +371,8 @@ __all__ = [
     "ABS_TOL",
     "REL_TOL",
     "classify",
+    "compare_results",
+    "grade",
     "is_numeric_type",
     "normalize",
     "number_text",

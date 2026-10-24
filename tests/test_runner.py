@@ -113,7 +113,15 @@ def test_resume_skips_questions_already_done(
     tmp_path: Path, ro_con, questions, monkeypatch
 ) -> None:
     out = tmp_path / "armB.jsonl"
-    run_arm(questions[:3], provider(questions), ro_con, arm="B", model_name="fake", out_path=out)
+    run_arm(
+        questions[:3],
+        provider(questions),
+        ro_con,
+        arm="B",
+        model_name="fake",
+        out_path=out,
+        golden_path=FIXTURE,
+    )
     asked: list[str] = []
     real = loop.answer
 
@@ -122,7 +130,15 @@ def test_resume_skips_questions_already_done(
         return real(question, *args, **kwargs)
 
     monkeypatch.setattr(loop, "answer", spy)
-    rows = run_arm(questions, provider(questions), ro_con, arm="B", model_name="fake", out_path=out)
+    rows = run_arm(
+        questions,
+        provider(questions),
+        ro_con,
+        arm="B",
+        model_name="fake",
+        out_path=out,
+        golden_path=FIXTURE,
+    )
     assert asked == [q.question for q in questions[3:]]
     assert [r.qid for r in rows] == [q.qid for q in questions]
     assert [d["qid"] for d in lines(out)] == [q.qid for q in questions]

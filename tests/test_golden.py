@@ -192,3 +192,53 @@ def test_freeze_matches_the_fixture_digests(tmp_path: Path, ro_con) -> None:
     shutil.copy(FIXTURE, copy)
     freeze(copy, ro_con)
     assert copy.read_text(encoding="utf-8") == FIXTURE.read_text(encoding="utf-8")
+
+
+# M2: column_order_matters ------------------------------------------------------------------------
+
+REAL_GOLDEN = Path(__file__).parent.parent / "golden" / "questions.jsonl"
+
+
+def test_column_order_matters_loads_and_round_trips(tmp_path: Path) -> None:
+    assert question().column_order_matters is False
+    q = question(column_order_matters=True)
+    assert q.column_order_matters is True
+    assert q.as_dict()["column_order_matters"] is True
+    assert "column_order_matters" not in question().as_dict()  # false is the default, not written
+    path = write(tmp_path / "g.jsonl", record(column_order_matters=True))
+    assert load(path)[0].column_order_matters is True
+
+
+def test_column_order_matters_must_be_a_bool(tmp_path: Path) -> None:
+    with pytest.raises(GoldenError, match="column_order_matters must be true or false"):
+        load(write(tmp_path / "g.jsonl", record(column_order_matters="yes")))
+
+
+def test_freeze_keeps_the_flag(tmp_path: Path, ro_con) -> None:
+    path = write(tmp_path / "g.jsonl", record(column_order_matters=True))
+    freeze(path, ro_con)
+    assert load(path)[0].column_order_matters is True
+
+
+def test_real_golden_set_flags_pivots_and_enumerated_columns() -> None:
+    questions = {q.qid: q for q in load(REAL_GOLDEN)}
+    assert len(questions) == 36
+    for qid, q in questions.items():
+        if q.pattern == "pivot":
+            assert q.column_order_matters, qid
+    assert questions["pivot-3"].column_order_matters  # "four more columns in that order"
+    assert questions["conditional_aggregation-3"].column_order_matters  # "in that order"
+    assert not questions["recursive_hierarchy-1"].column_order_matters  # one column
+    assert not questions["date_spine-2"].column_order_matters  # one column
+
+
+def test_real_golden_file_only_gained_the_new_key_on_34_questions() -> None:
+    lines = REAL_GOLDEN.read_text(encoding="utf-8").splitlines()
+    old = ["qid", "question", "pattern", "reference_sql", "order_matters", "tags", "example"]
+    for line in lines:
+        data = json.loads(line)
+        keys = list(data)
+        assert keys == old or keys == [*old, "column_order_matters"]
+        assert data.get("column_order_matters", True) is True  # only ever written as true
+    assert sum("column_order_matters" in json.loads(x) for x in lines) == 34
+    assert bytes([13]) not in REAL_GOLDEN.read_bytes()

@@ -6,7 +6,14 @@ import pytest
 
 from analyst._vendor.results import Column, ResultSet
 from analyst.models import FAILURE_KINDS, Trace
-from analyst.score import classify, is_numeric_type, normalize, results_equal
+from analyst.score import (
+    classify,
+    compare_results,
+    grade,
+    is_numeric_type,
+    normalize,
+    results_equal,
+)
 
 
 def rs(types: list[str], rows: list[tuple]) -> ResultSet:
@@ -202,3 +209,80 @@ def test_midnight_timestamp_equals_its_date() -> None:
     later = ResultSet((Column("m", "TIMESTAMP"),), (("2024-03-01 10:00:00",),))
     assert results_equal(expected, truncated, order_matters=False)
     assert not results_equal(expected, later, order_matters=False)
+
+
+# M2: column order -------------------------------------------------------------------------------
+
+
+def test_column_order_matters_means_positional_only() -> None:
+    a = rs(["VARCHAR", "BIGINT"], [("a", 1), ("b", 2)])
+    b = rs(["BIGINT", "VARCHAR"], [(1, "a"), (2, "b")])
+    assert results_equal(a, b)  # default: a permutation of the columns is accepted
+    assert not results_equal(a, b, False, column_order_matters=True)
+    assert results_equal(a, a, False, column_order_matters=True)
+
+
+def test_two_numeric_columns_swapped_is_the_mislabelled_case() -> None:
+    revenue_then_cumulative = rs(["DOUBLE", "DOUBLE"], [(1.0, 1.0), (2.0, 3.0)])
+    cumulative_first = rs(["DOUBLE", "DOUBLE"], [(1.0, 1.0), (3.0, 2.0)])
+    assert results_equal(revenue_then_cumulative, cumulative_first)  # permutation passes...
+    assert not results_equal(
+        revenue_then_cumulative, cumulative_first, column_order_matters=True
+    )  # ...and strict mode refuses it
+
+
+def test_compare_results_reports_whether_a_mapping_was_needed() -> None:
+    a = rs(["VARCHAR", "BIGINT"], [("a", 1), ("b", 2)])
+    b = rs(["BIGINT", "VARCHAR"], [(1, "a"), (2, "b")])
+    assert compare_results(a, a) == (True, False)
+    assert compare_results(a, b) == (True, True)
+    assert compare_results(a, b, column_order_matters=True) == (False, False)
+    assert compare_results(a, rs(["BIGINT"], [(1,), (2,)])) == (False, False)
+
+
+def test_classify_and_grade_thread_column_order_matters() -> None:
+    a = rs(["VARCHAR", "BIGINT"], [("a", 1), ("b", 2)])
+    b = rs(["BIGINT", "VARCHAR"], [(1, "a"), (2, "b")])
+    assert classify(a, trace("ok", b)) is None
+    assert classify(a, trace("ok", b), column_order_matters=True) == "wrong_values"
+    assert grade(a, trace("ok", b)) == (None, True)
+    assert grade(a, trace("ok", a)) == (None, False)
+    assert grade(a, trace("ok", b), column_order_matters=True) == ("wrong_values", False)
+
+
+def test_wrong_order_is_still_found_under_strict_columns() -> None:
+    a = rs(["VARCHAR", "BIGINT"], [("a", 1), ("b", 2)])
+    shuffled = rs(["VARCHAR", "BIGINT"], [("b", 2), ("a", 1)])
+    assert (
+        classify(a, trace("ok", shuffled), order_matters=True, column_order_matters=True)
+        == "wrong_order"
+    )
+
+
+# L4: timestamps with a time zone ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("type_name", ["TIMESTAMP WITH TIME ZONE", "TIMESTAMPTZ"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "2024-03-01 00:00:00+00:00",
+        "2024-03-01 00:00:00+00",
+        "2024-03-01 00:00:00.000000+00:00",
+        "2024-03-01T00:00:00Z",
+    ],
+)
+def test_midnight_utc_timestamptz_equals_its_date(type_name: str, text: str) -> None:
+    expected = ResultSet((Column("m", "DATE"),), (("2024-03-01",),))
+    actual = ResultSet((Column("m", type_name),), ((text,),))
+    assert results_equal(expected, actual)
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["2024-03-01 10:00:00+00:00", "2024-03-01 00:00:00+05:30", "2024-03-01 00:00:01+00"],
+)
+def test_other_timestamptz_values_stay_distinct(text: str) -> None:
+    expected = ResultSet((Column("m", "DATE"),), (("2024-03-01",),))
+    actual = ResultSet((Column("m", "TIMESTAMP WITH TIME ZONE"),), ((text,),))
+    assert not results_equal(expected, actual)

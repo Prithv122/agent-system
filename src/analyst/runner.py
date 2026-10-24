@@ -12,6 +12,17 @@ Three rules protect the measurement:
 - A provider failure (no key, unreachable, replay miss) propagates and stops the run. It is never
   scored as a wrong answer, which would quietly lower an arm's accuracy for infrastructure reasons.
 - The explainer is off by default: EX measures the SQL. Explanation quality is measured separately.
+
+Resuming and running more than one arm have two further guards:
+
+- A resumed run must have the same setup as the one that wrote the rows: model, golden file hash,
+  attempt budget, explainer and value-hint switches are read back from the sidecar and compared.
+  Any difference refuses the resume (`ResumeMismatchError`) and leaves the files as they were,
+  because rows from two setups under one attribution would be a result nobody ran.
+- Arms run **sequentially**, never in parallel. Arm A's first writer reply is cached once and
+  served to arms B and C (their first prompt is byte-identical), which is what makes the arms
+  nested. The cache directory is single-writer, so a run holds ``<cache_dir>/.run.lock`` for its
+  duration and a second run refuses to start (`RunLockedError`).
 """
 
 from __future__ import annotations
@@ -19,7 +30,8 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
-from collections.abc import Sequence
+import os
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -29,10 +41,45 @@ import duckdb
 from ._vendor.results import ResultSet
 from .golden import digest, reference_result
 from .models import ARMS, EvalRow, GoldenQuestion
+from .score import grade
 
 
 class GoldenDriftError(RuntimeError):
     """A reference answer no longer matches its frozen digest. The run is aborted."""
+
+
+class ResumeMismatchError(ValueError):
+    """The run file on disk was written under a different setup than this run."""
+
+
+class RunLockedError(RuntimeError):
+    """Another run holds the cache lock."""
+
+
+LOCK_NAME = ".run.lock"
+
+
+@contextlib.contextmanager
+def run_lock(lock_dir: Path) -> Iterator[Path]:
+    """Hold ``<lock_dir>/.run.lock`` while a run is in progress; refuse if it already exists."""
+    lock_dir = Path(lock_dir)
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    path = lock_dir / LOCK_NAME
+    try:
+        handle = path.open("x", encoding="utf-8")
+    except FileExistsError:
+        raise RunLockedError(
+            f"another run holds {path}. Arms run one after another so that arm A's replies are "
+            "cached once and served to B and C. If no run is active (a crashed run leaves the "
+            "file behind), delete it and start again."
+        ) from None
+    with handle:
+        handle.write(f"pid {os.getpid()} started {_now()}\n")
+    try:
+        yield path
+    finally:
+        with contextlib.suppress(OSError):
+            path.unlink()
 
 
 def _now() -> str:
@@ -96,10 +143,73 @@ def run_arm(
     explain: bool = False,
     resume: bool = True,
     golden_path: Path | None = None,
+    value_hints: bool = False,
+    lock_dir: Path | None = None,
 ) -> list[EvalRow]:
-    """Answer every question under ``arm`` and return the scored rows (resumed ones included)."""
+    """Answer every question under ``arm`` and return the scored rows (resumed ones included).
+
+    Run the arms one after another, not in parallel (see the module docstring). With ``lock_dir``
+    (the cache directory) the run holds ``<lock_dir>/.run.lock`` and refuses to start while
+    another run does.
+    """
+    with contextlib.ExitStack() as stack:
+        if lock_dir is not None:
+            stack.enter_context(run_lock(lock_dir))
+        return _run_arm(
+            questions,
+            provider,
+            con,
+            arm=arm,
+            model_name=model_name,
+            out_path=out_path,
+            traces_path=traces_path,
+            explain=explain,
+            resume=resume,
+            golden_path=golden_path,
+            value_hints=value_hints,
+        )
+
+
+def check_resume(meta_file: Path, expected: dict[str, Any], out_path: Path) -> dict[str, Any]:
+    """Compare the sidecar of an earlier run with this run's setup; raise on any difference.
+
+    Returns the earlier sidecar. A run file with rows but no readable sidecar cannot be attributed
+    to any setup, so it is refused too.
+    """
+    try:
+        previous = json.loads(meta_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raise ResumeMismatchError(
+            f"{out_path} has rows but no readable sidecar ({meta_file.name}); cannot tell which "
+            "model and golden file produced them. Move the file away or rerun with resume off."
+        ) from None
+    for key, value in expected.items():
+        # A sidecar written before value hints existed was run without them.
+        found = previous.get(key, False if key == "value_hints" else None)
+        if found != value:
+            raise ResumeMismatchError(
+                f"refusing to resume {out_path}: {key} was {found!r} in the earlier run and is "
+                f"{value!r} now. Rows from two setups must not share one run file; use a new "
+                "--out, or rerun with resume off to start over."
+            )
+    return previous
+
+
+def _run_arm(
+    questions: Sequence[GoldenQuestion],
+    provider: Any,
+    con: duckdb.DuckDBPyConnection,
+    *,
+    arm: str,
+    model_name: str,
+    out_path: Path,
+    traces_path: Path | None,
+    explain: bool,
+    resume: bool,
+    golden_path: Path | None,
+    value_hints: bool,
+) -> list[EvalRow]:
     from . import loop
-    from .score import classify
 
     if arm not in ARMS:
         raise ValueError(f"unknown arm {arm!r}; expected one of {sorted(ARMS)}")
@@ -127,14 +237,12 @@ def run_arm(
 
     meta_file = meta_path(out_path)
     started = _now()
-    if resume and meta_file.exists():
-        with contextlib.suppress(json.JSONDecodeError, OSError):
-            started = json.loads(meta_file.read_text(encoding="utf-8")).get("started_utc", started)
     meta: dict[str, Any] = {
         "model": model_name,
         "arm": arm,
         "max_attempts": max_attempts,
         "explain": explain,
+        "value_hints": value_hints,
         "golden_sha256": golden_sha256(questions, golden_path),
         "questions": len(questions),
         "resumed_rows": len(done),
@@ -142,9 +250,18 @@ def run_arm(
         "started_utc": started,
         "finished_utc": None,
     }
+    if resume and done:
+        identity = {
+            key: meta[key]
+            for key in ("model", "golden_sha256", "max_attempts", "explain", "value_hints")
+        }
+        previous = check_resume(meta_file, identity, out_path)
+        meta["started_utc"] = previous.get("started_utc", started)
     meta_file.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8", newline="\n")
 
     reset = getattr(provider, "reset", None)
+    # Off is the loop's own default, so only the switch that is on is passed.
+    answer_extras: dict[str, Any] = {"value_hints": True} if value_hints else {}
     with out_path.open("a", encoding="utf-8", newline="\n") as out:
         traces_file = traces_path.open("a", encoding="utf-8", newline="\n") if traces_path else None
         try:
@@ -154,9 +271,19 @@ def run_arm(
                 if callable(reset):
                     reset()
                 trace = loop.answer(
-                    q.question, provider, con, max_attempts=max_attempts, explain=explain
+                    q.question,
+                    provider,
+                    con,
+                    max_attempts=max_attempts,
+                    explain=explain,
+                    **answer_extras,
                 )
-                kind = classify(expected[q.qid], trace, q.order_matters)
+                kind, mapped = grade(
+                    expected[q.qid],
+                    trace,
+                    q.order_matters,
+                    column_order_matters=q.column_order_matters,
+                )
                 row = EvalRow(
                     qid=q.qid,
                     arm=arm,
@@ -169,6 +296,7 @@ def run_arm(
                     completion_tokens=trace.completion_tokens,
                     latency_s=round(trace.latency_s, 6),
                     pattern=q.pattern,
+                    column_mapping_used=mapped,
                 )
                 out.write(json.dumps(row.as_dict(), ensure_ascii=False) + "\n")
                 out.flush()

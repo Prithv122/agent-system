@@ -63,6 +63,9 @@ class GoldenQuestion:
     order_matters: bool = False
     tags: tuple[str, ...] = ()
     example: bool = False
+    #: True when the question fixes the order of the output columns (a pivot, or "in that order"):
+    #: the scorer then compares column by column in position, with no permutation.
+    column_order_matters: bool = False
     expected_digest: str | None = None
 
     @classmethod
@@ -75,12 +78,16 @@ class GoldenQuestion:
             order_matters=bool(data.get("order_matters", False)),
             tags=tuple(data.get("tags", ())),
             example=bool(data.get("example", False)),
+            column_order_matters=bool(data.get("column_order_matters", False)),
             expected_digest=data.get("expected_digest"),
         )
 
     def as_dict(self) -> dict[str, Any]:
         out = asdict(self)
         out["tags"] = list(self.tags)
+        if not self.column_order_matters:
+            # Written only when true, so a file that never used the key keeps its exact shape.
+            del out["column_order_matters"]
         return out
 
 
@@ -164,6 +171,9 @@ class EvalRow:
     completion_tokens: int
     latency_s: float
     pattern: str = ""
+    #: True when this row counts as correct only because the agent's columns had to be reordered
+    #: to match the reference (never true for a wrong answer).
+    column_mapping_used: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

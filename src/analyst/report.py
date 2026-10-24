@@ -34,12 +34,22 @@ def _meta_path(path: Path) -> Path:
     return path.with_name(path.name + ".meta.json")
 
 
-def load_runs_with_meta(
+#: Sidecar fields that must agree across the arms being compared. The arms differ in their
+#: attempt budget and nothing else, so a different model, golden file, explainer switch or
+#: value-hint switch means the files are not one experiment.
+COMPARABLE_META = ("model", "golden_sha256", "explain", "value_hints")
+
+
+def load_runs_full(
     paths: Sequence[Path | str],
-) -> tuple[dict[str, list[EvalRow]], dict[str, str]]:
-    """Rows per arm, and the model name recorded in each run's sidecar (when there is one)."""
+) -> tuple[dict[str, list[EvalRow]], dict[str, str], dict[str, dict]]:
+    """Rows per arm, each run's model name and its whole sidecar (when there is one).
+
+    Raises `ReportError` when the arms' sidecars disagree on `COMPARABLE_META`.
+    """
     runs: dict[str, list[EvalRow]] = {}
     models: dict[str, str] = {}
+    metas: dict[str, dict] = {}
     for raw in paths:
         path = Path(raw)
         if not path.exists():
@@ -67,7 +77,10 @@ def load_runs_with_meta(
         meta = _meta_path(path)
         if meta.exists():
             with contextlib.suppress(json.JSONDecodeError):
-                models[arm] = str(json.loads(meta.read_text(encoding="utf-8")).get("model", ""))
+                data = json.loads(meta.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    metas[arm] = data
+                    models[arm] = str(data.get("model", ""))
     reference = None
     for arm in sorted(runs):
         ids = {r.qid for r in runs[arm]}
@@ -79,6 +92,27 @@ def load_runs_with_meta(
                 f"arms {reference[0]} and {arm} cover different questions "
                 f"(differing ids: {', '.join(only[:5])}{'...' if len(only) > 5 else ''})"
             )
+    for key in COMPARABLE_META:
+        values = {arm: metas[arm][key] for arm in sorted(metas) if key in metas[arm]}
+        if len({json.dumps(v) for v in values.values()}) > 1:
+            shown = ", ".join(f"{arm}={_short(v)}" for arm, v in values.items())
+            raise ReportError(
+                f"these runs are not comparable: {key} differs between arms ({shown}). "
+                "Arms must share the model, golden file, explainer and value-hint settings."
+            )
+    return runs, models, metas
+
+
+def _short(value: object) -> str:
+    text = str(value)
+    return text if len(text) <= 16 else text[:12] + "..."
+
+
+def load_runs_with_meta(
+    paths: Sequence[Path | str],
+) -> tuple[dict[str, list[EvalRow]], dict[str, str]]:
+    """Rows per arm, and the model name recorded in each run's sidecar (when there is one)."""
+    runs, models, _ = load_runs_full(paths)
     return runs, models
 
 
@@ -113,7 +147,11 @@ def _ordered(runs: Mapping[str, list[EvalRow]]) -> list[str]:
 
 
 def render(
-    runs: Mapping[str, list[EvalRow]], *, seed: int, models: Mapping[str, str] | None = None
+    runs: Mapping[str, list[EvalRow]],
+    *,
+    seed: int,
+    models: Mapping[str, str] | None = None,
+    metas: Mapping[str, Mapping] | None = None,
 ) -> str:
     """The full markdown report."""
     if not runs:
@@ -130,12 +168,37 @@ def render(
             "",
         ]
 
+    unfinished = [
+        a
+        for a in arms
+        if a in (metas or {}) and "finished_utc" in metas[a] and metas[a]["finished_utc"] is None
+    ]
+    if unfinished:
+        out += [
+            f"> WARNING: arm(s) {', '.join(unfinished)} are incomplete (finished_utc is null in "
+            "the sidecar): the run was stopped or is still going, so these rows are not a "
+            "finished arm.",
+            "",
+        ]
+    unfrozen = [a for a in arms if a in (metas or {}) and (metas[a].get("unfrozen_questions") or 0)]
+    if unfrozen:
+        counts = ", ".join(f"{a}: {metas[a]['unfrozen_questions']}" for a in unfrozen)
+        out += [
+            f"> WARNING: unfrozen questions in arm(s) {counts} (drift protection off): "
+            "the reference answers for those questions were not checked against a frozen digest.",
+            "",
+        ]
+    hinted = sorted({str(metas[a].get("value_hints")) for a in arms if a in (metas or {})})
+    if hinted == ["True"]:
+        out += ["> Value hints were on in the schema text for every arm.", ""]
+
     # (1) per-arm summary
     rows = []
     for arm in arms:
         r = runs[arm]
         ok = sum(1 for x in r if x.ok)
         lat = [x.latency_s for x in r]
+        mapped = sum(1 for x in r if x.ok and x.column_mapping_used)
         rows.append(
             [
                 arm,
@@ -147,6 +210,7 @@ def render(
                 f"{statistics.fmean(x.prompt_tokens + x.completion_tokens for x in r):.0f}",
                 f"{statistics.median(lat):.2f}",
                 f"{percentile(lat, 95):.2f}",
+                mapped,
             ]
         )
     out += [
@@ -161,15 +225,29 @@ def render(
                 "mean writer attempts",
                 "mean LLM calls",
                 "mean tokens (prompt+completion)",
-                "median latency s",
-                "p95 latency s",
+                "median model latency s",
+                "p95 model latency s",
+                "EX passes via column permutation",
             ],
             rows,
         ),
         "",
-        "Latency is the summed model and engine time per question; p95 is nearest-rank.",
+        "Latency is model time only, summed per question: engine steps (guard, EXPLAIN, execution) "
+        "record 0, so it is not end-to-end time. p95 is nearest-rank.",
         "",
     ]
+    mapped_notes = [
+        f"{a}: {sum(1 for x in runs[a] if x.ok and x.column_mapping_used)} of "
+        f"{sum(1 for x in runs[a] if x.ok)}"
+        for a in arms
+        if any(x.ok and x.column_mapping_used for x in runs[a])
+    ]
+    if mapped_notes:
+        out += [
+            "Passes that needed the agent's columns reordered to match the reference "
+            "(questions that do not fix column order): " + "; ".join(mapped_notes) + ".",
+            "",
+        ]
 
     # (2) paired comparisons
     pair_rows = []
