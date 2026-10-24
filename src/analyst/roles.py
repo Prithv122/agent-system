@@ -22,6 +22,8 @@ Rules:
 - Write exactly one SELECT (or WITH ... SELECT) statement in DuckDB SQL. Never modify data.
 - Use only the tables and columns listed in the schema. Do not invent names.
 - Return only the columns the question asks for, and sort only when the question asks for an order.
+- If you use PIVOT, list the pivot values explicitly (PIVOT ... ON col IN (...)); a PIVOT \
+without that list runs as two statements and is rejected.
 - If earlier attempts are listed, each failed with the error shown. Fix that error.
 
 Reply with one JSON object and nothing else:
