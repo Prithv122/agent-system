@@ -7,7 +7,15 @@ from pathlib import Path
 import pytest
 
 from analyst._vendor.results import Column, ResultSet
-from analyst.golden import PATTERNS, GoldenError, check, digest, freeze, load
+from analyst.golden import (
+    PATTERNS,
+    GoldenError,
+    check,
+    degenerate_reason,
+    digest,
+    freeze,
+    load,
+)
 from analyst.models import GoldenQuestion
 
 FIXTURE = Path(__file__).parent / "fixtures" / "example.jsonl"
@@ -242,3 +250,60 @@ def test_real_golden_file_only_gained_the_new_key_on_34_questions() -> None:
         assert data.get("column_order_matters", True) is True  # only ever written as true
     assert sum("column_order_matters" in json.loads(x) for x in lines) == 34
     assert bytes([13]) not in REAL_GOLDEN.read_bytes()
+
+
+# degenerate references ----------------------------------------------------------------------------
+
+ALL_NULL = "SELECT CAST(NULL AS INTEGER) AS a, CAST(NULL AS VARCHAR) AS b"
+ALL_ZERO = "SELECT 'x' AS label, 0 AS n, CAST(0 AS DECIMAL(10,2)) AS m"
+SAME_ROWS = "SELECT 'a' AS label, 1 AS n FROM range(3)"
+DEGENERATE_SQL = {"null": ALL_NULL, "zero": ALL_ZERO, "same": SAME_ROWS}
+
+
+@pytest.mark.parametrize(
+    ("name", "needle"),
+    [("null", "every cell is NULL"), ("zero", "every numeric cell is zero"), ("same", "3 rows")],
+)
+def test_check_flags_each_kind_of_degenerate_reference(ro_con, name: str, needle: str) -> None:
+    problems = check([question(qid=name, reference_sql=DEGENERATE_SQL[name])], ro_con)
+    assert len(problems) == 1
+    assert problems[0].startswith(f"{name}:")
+    assert "degenerate" in problems[0]
+    assert needle in problems[0]
+
+
+@pytest.mark.parametrize("name", ["null", "zero", "same"])
+def test_degenerate_ok_tag_silences_the_check(ro_con, name: str) -> None:
+    q = question(qid=name, reference_sql=DEGENERATE_SQL[name], tags=["degenerate_ok"])
+    assert check([q], ro_con) == []
+
+
+def test_degenerate_ok_only_silences_the_degenerate_rule(ro_con) -> None:
+    q = question(
+        qid="t", reference_sql="SELECT * FROM customers WHERE 1 = 0", tags=["degenerate_ok"]
+    )
+    assert "no rows" in check([q], ro_con)[0]
+
+
+def test_degenerate_reason_leaves_ordinary_results_alone() -> None:
+    assert degenerate_reason(rs(["BIGINT"], [(0,), (5,)])) is None  # some number is nonzero
+    assert degenerate_reason(rs(["VARCHAR", "BIGINT"], [("a", 0), ("b", 1)])) is None
+    assert degenerate_reason(rs(["VARCHAR"], [("a",)])) is None  # one row cannot repeat
+    assert degenerate_reason(rs(["VARCHAR", "BIGINT"], [("a", None), ("b", 1)])) is None
+    assert degenerate_reason(rs(["VARCHAR"], [("a",), ("b",)])) is None  # no numbers at all
+    assert degenerate_reason(rs(["DATE"], [("2024-01-01",), ("2024-01-02",)])) is None
+
+
+def test_degenerate_reason_edge_cases() -> None:
+    assert degenerate_reason(rs(["BIGINT"], [(0,)])) is not None  # single zero cell
+    assert degenerate_reason(rs(["BIGINT", "VARCHAR"], [(None, None), (None, None)])) is not None
+    assert degenerate_reason(rs(["DOUBLE"], [(0.0,), (0.0,)])) is not None
+    # NULL beside zero: not all NULL, and the only number is zero
+    assert degenerate_reason(rs(["BIGINT", "BIGINT"], [(None, 0)])) == "every numeric cell is zero"
+    # a boolean is not a number
+    assert degenerate_reason(rs(["BOOLEAN", "BOOLEAN"], [(True, False)])) is None
+
+
+def test_real_golden_set_checks_clean_for_degeneracy(ro_con) -> None:
+    problems = check(load(REAL_GOLDEN), ro_con)
+    assert [p for p in problems if "degenerate" in p] == []

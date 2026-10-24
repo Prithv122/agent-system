@@ -6,7 +6,9 @@ answers are the ground truth of the whole project. Three things keep them honest
 - `load` rejects a malformed file loudly (duplicate ids, missing fields, a typo'd pattern or key)
   rather than silently dropping or defaulting a question.
 - `check` proves every reference SQL passes the same read-only guard the agent faces, runs, and
-  returns a usable result (not empty, not so large that the executor's row cap would truncate it).
+  returns a usable result (not empty, not so large that the executor's row cap would truncate it,
+  not degenerate: all NULL, all numbers zero, or every row identical, unless the question is
+  tagged ``degenerate_ok``).
 - `freeze` records a digest of each reference result in the file. The runner recomputes the
   reference result at eval time and aborts if a digest moved, so a changed warehouse or an edited
   reference cannot quietly shift a published number.
@@ -48,6 +50,9 @@ PATTERNS: tuple[str, ...] = (
     "conditional_aggregation",
     "tie_safe_ranking",
 )
+
+#: A question tagged with this may have a degenerate reference result (see `degenerate_reason`).
+DEGENERATE_OK = "degenerate_ok"
 
 #: The executor caps results at this many rows; a reference at the cap may have been truncated.
 RESULT_CAP = 1000
@@ -154,6 +159,24 @@ def reference_result(con: duckdb.DuckDBPyConnection, question: GoldenQuestion) -
     return executor.run(con, question.reference_sql)
 
 
+def degenerate_reason(result: ResultSet) -> str | None:
+    """Why a result is too uninformative to be a reference answer, or None when it is fine.
+
+    A degenerate reference is one a wrong query can match by luck: every cell NULL, every numeric
+    cell zero (and at least one numeric cell), or several rows that are all identical.
+    """
+    rows = normalize(result)
+    cells = [v for row in rows for v in row]
+    if cells and all(v is None for v in cells):
+        return "every cell is NULL"
+    numbers = [v for v in cells if isinstance(v, Decimal)]
+    if numbers and all(v == 0 for v in numbers):
+        return "every numeric cell is zero"
+    if len(rows) > 1 and all(row == rows[0] for row in rows[1:]):
+        return f"all {len(rows)} rows are identical"
+    return None
+
+
 def check(
     questions: Sequence[GoldenQuestion],
     con: duckdb.DuckDBPyConnection,
@@ -184,6 +207,13 @@ def check(
                 f"{RESULT_CAP}, so it may be truncated (need fewer than {RESULT_CAP})"
             )
             continue
+        if DEGENERATE_OK not in q.tags:
+            reason = degenerate_reason(result)
+            if reason is not None:
+                problems.append(
+                    f"{q.qid}: reference result is degenerate ({reason}); a wrong query could "
+                    f"match it by luck (tag the question {DEGENERATE_OK!r} if that is intended)"
+                )
         got = digest(result, q.order_matters)
         if digest(again, q.order_matters) != got:
             problems.append(f"{q.qid}: reference SQL is not deterministic (two runs differ)")
