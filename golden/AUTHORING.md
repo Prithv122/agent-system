@@ -1,6 +1,7 @@
 # Golden set authoring notes
 
-> **DRAFT — awaiting owner review; no real run may use this set until the owner signs off.**
+> **Reviewed by the owner 2026-10-25: structure approved, sessionization-1/-2 revised. Not frozen yet:
+> freezing waits for the pre-freeze review report (`PRE_FREEZE_REVIEW.md`) and the owner's confirmation.**
 >
 > `questions.jsonl` has no `expected_digest` yet. Freeze it only after sign-off, against the seeded
 > warehouse (seed 20260830: 400 customers, 48 products, 35 employees, 3,000 orders, 9,001 order
@@ -33,7 +34,7 @@ beyond the question and the schema.
 | Day / month / quarter / year of an order | Calendar part of `order_ts` (a timestamp with no time zone). Quarter text looks like `2025-Q3`, month text like `2025-03`. |
 | Customer country / segment | The values on the `customers` row. |
 | Event ordering | `event_ts`, then `event_id`. The warehouse has timestamps shared by several events of one customer, so the question text states the tie rule wherever it matters. |
-| Session | A new session starts at a customer's first page view and whenever the gap to the previous page view is **strictly more than** the threshold. A gap of exactly the threshold stays in the session. Threshold is 30 minutes (sessionization-1, -2) or 15 minutes (sessionization-3). |
+| Session | A new session starts at a customer's first page view and whenever the gap to the previous page view is **strictly more than** the threshold. A gap of exactly the threshold stays in the session. Threshold is 10 minutes (sessionization-1, -2) or 15 minutes (sessionization-3). |
 | Subscription coverage | A period covers the dates from `period_start` to `period_end`. A **lapse** is a gap where a period starts after the latest end date of all earlier periods of that customer; its length is `period_start - that end date` in days. A merged stretch's length is `last end - first start`. "Active subscription on a date" is not used by any question. |
 | Streak | Consecutive calendar days (page views) or consecutive calendar months (completed orders). |
 | Rounding | Stated in each question that rounds. All rounded reference values were checked to sit well away from a half-way boundary, so half-up and half-even agree. |
@@ -74,8 +75,8 @@ Rows and columns are what the reference returns on the seeded warehouse. "Recipe
 | subscription_lapses-1 | 08 | 3 x 3 | Customer 46 has three lapses. The full lapse definition is in the text. Ordered. |
 | subscription_lapses-2 | 08 | 10 x 4 | Ten longest lapses; ties by customer id then date (the 10th lapse is 75 days, the 11th 74, so no tie at the cut). Ordered. |
 | subscription_lapses-3 | 08 | 5 x 2 | Overlap counted once; abutting periods join one stretch; days = last end minus first start. Fifth is 351, sixth 326, so no tie at the cut. Ordered. |
-| sessionization-1 | 09 | 1 x 2 | Customer 7 has one visit of 10 views, including an event exactly 30 minutes after the previous one. Under the stated "strictly more than" rule that is one session; under "30 minutes or more" it would be two. This is the boundary test. |
-| sessionization-2 | 09 | 1 x 2 | Average = total views / total sessions over all customers, rounded to 2 decimals. |
+| sessionization-1 | 09 | 3 x 3 | **Revised 2026-10-25 (owner review).** 10-minute rule, customers 3, 26 and 127: 35 / 17 / 16 sessions over 67 / 29 / 29 views. Each of the three has one gap of exactly 10 minutes and many gaps either side, so each row changes (36 / 18 / 17) under "10 minutes or more". Not ordered. |
+| sessionization-2 | 09 | 1 x 2 | **Revised 2026-10-25 (owner review).** 10-minute rule over all customers: 6,923 sessions, 1.78 views per session (raw 1.7768). The data has 5,370 gaps under 10 minutes, 8 exactly at 10 minutes (8 different customers) and 6,523 over, so "10 minutes or more" gives 6,931 and 1.77. |
 | sessionization-3 | 09 | 10 x 2 | 15-minute rule. In this warehouse views inside a visit are up to 20 minutes apart, so a 15-minute rule splits visits and is the question where the threshold actually changes the answer. Five customers tie at 24 sessions and all five are inside the top ten; the 11th has 23. Ordered. |
 | pivot-1 | 10 | 6 x 4 | Counts of completed orders; 0 where none (none occurs). Does not require PIVOT syntax. |
 | pivot-2 | 10 | 12 x 9 | Eight category columns named in the question; no empty cells occur in 2025. Reference uses `PIVOT`; a `SUM(CASE ...)` form gives the same values. |
@@ -101,9 +102,9 @@ Rows and columns are what the reference returns on the seeded warehouse. "Recipe
 - **Rounding**: for lag_lead-2, -3, date_spine-3, sessionization-2, pivot-3, conditional_aggregation-1
   and -2 the unrounded values were checked for distance from a rounding boundary; the closest
   is pivot-3 at 2.3% of the last digit, far above float noise.
-- Sessionization: with a 30-minute rule, sessions in this data equal customer-visit-days (views inside
-  a visit are under 20 minutes apart), so the discriminating cases are customer 7's exact-30-minute
-  gap (sessionization-1) and the 15-minute rule (sessionization-3).
+- Sessionization: views inside a visit are 5 s to 20 min apart and visits are hours apart, so a
+  30-minute rule only counts visits. All three questions use a threshold inside the intra-visit range
+  (10 or 15 minutes), where the data holds gaps below, exactly at and above it across many customers.
 
 ## Review checklist for the owner
 
@@ -118,8 +119,9 @@ Rows and columns are what the reference returns on the seeded warehouse. "Recipe
 
 ### Questions I consider weak or worth a second look
 
-- **sessionization-1 and -2**: with a 30-minute threshold the data barely exercises the rule
-  (only customer 7's boundary event). They are valid but undemanding; -3 carries the real test.
+- ~~**sessionization-1 and -2**: with a 30-minute threshold the data barely exercises the rule.~~
+  Resolved 2026-10-25: both moved to a 10-minute rule (see their rows). The shared warehouse was not
+  changed, so its provenance (sql-cookbook, seed 20260830) is intact.
 - **recursive_hierarchy-1**: tiny result (9 ids) and a very small org; easy by design.
 - **running_total-3**: only five customers qualify, so a single wrong customer moves accuracy a lot
   within the question (but the question is still scored all-or-nothing).
