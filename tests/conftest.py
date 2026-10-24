@@ -35,3 +35,13 @@ def ro_con(warehouse_path: Path) -> Iterator[duckdb.DuckDBPyConnection]:
     con = open_readonly(warehouse_path)
     yield con
     con.close()
+
+
+@pytest.fixture(autouse=True)
+def _no_ollama_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test may reach a local model server: the digest lookup answers "not reachable".
+
+    A test that needs a digest passes its own fetcher to `llm.describe` or patches this name."""
+    from analyst import llm
+
+    monkeypatch.setattr(llm, "fetch_ollama_digest", lambda host, model_id, **_: None)

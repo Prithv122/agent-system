@@ -36,8 +36,18 @@ def _meta_path(path: Path) -> Path:
 
 #: Sidecar fields that must agree across the arms being compared. The arms differ in their
 #: attempt budget and nothing else, so a different model, golden file, explainer switch or
-#: value-hint switch means the files are not one experiment.
-COMPARABLE_META = ("model", "golden_sha256", "explain", "value_hints")
+#: value-hint switch means the files are not one experiment. So does a different frozen model
+#: configuration (id, Ollama digest, generation settings) or a different value-hint set, even
+#: under the same model name; a sidecar that lacks one of those two fields counts as None.
+COMPARABLE_META = (
+    "model",
+    "golden_sha256",
+    "explain",
+    "value_hints",
+    "model_config",
+    "value_hints_sha256",
+)
+_OPTIONAL_META = ("model_config", "value_hints_sha256")
 
 
 def load_runs_full(
@@ -93,19 +103,76 @@ def load_runs_full(
                 f"(differing ids: {', '.join(only[:5])}{'...' if len(only) > 5 else ''})"
             )
     for key in COMPARABLE_META:
-        values = {arm: metas[arm][key] for arm in sorted(metas) if key in metas[arm]}
+        values = {
+            arm: metas[arm].get(key)
+            for arm in sorted(metas)
+            if key in metas[arm] or key in _OPTIONAL_META
+        }
         if len({json.dumps(v) for v in values.values()}) > 1:
             shown = ", ".join(f"{arm}={_short(v)}" for arm, v in values.items())
             raise ReportError(
                 f"these runs are not comparable: {key} differs between arms ({shown}). "
-                "Arms must share the model, golden file, explainer and value-hint settings."
+                "Arms must share the model (id, digest and generation settings), golden file, "
+                "explainer and value-hint settings and value-hint set."
             )
     return runs, models, metas
 
 
 def _short(value: object) -> str:
+    if isinstance(value, dict):
+        return describe_model(value)
     text = str(value)
     return text if len(text) <= 16 else text[:12] + "..."
+
+
+def short_digest(digest: object) -> str:
+    """The first 12 hex characters of a digest (``sha256:`` prefix dropped), or ``n/a``."""
+    if not isinstance(digest, str) or not digest:
+        return "n/a"
+    return digest.removeprefix("sha256:")[:12]
+
+
+def describe_model(config: Mapping) -> str:
+    """One line for a frozen model configuration: ``ollama qwen2.5:7b (digest 1a2b3c4d5e6f)``."""
+    provider = str(config.get("provider", "unknown"))
+    model = config.get("model")
+    text = f"{provider} {model}" if model else provider
+    if provider == "ollama" or "digest" in config:
+        text += f" (digest {short_digest(config.get('digest'))})"
+    return text
+
+
+def _header_lines(arms: Sequence[str], metas: Mapping[str, Mapping]) -> list[str]:
+    """Model identity and value-hint hash lines, one per distinct value across the arms."""
+    lines: list[str] = []
+    configs = {
+        a: metas[a]["model_config"]
+        for a in arms
+        if isinstance(metas.get(a, {}).get("model_config"), dict)
+    }
+    if configs:
+        groups: dict[str, list[str]] = {}
+        for arm, config in configs.items():
+            groups.setdefault(describe_model(config), []).append(arm)
+        first = next(iter(configs.values()))
+        if len(groups) == 1:
+            line = f"Model: {next(iter(groups))}"
+            if "temperature" in first:
+                line += (
+                    f", temperature {first['temperature']}, max_tokens {first.get('max_tokens')}"
+                    f", num_ctx {first.get('num_ctx')}, seed {first.get('seed')}"
+                )
+            lines.append(line)
+        else:
+            lines.append(
+                "Model (arms differ): " + "; ".join(f"{k} = arms {v}" for k, v in groups.items())
+            )
+    hashes = {a: metas[a].get("value_hints_sha256") for a in arms if a in metas}
+    if any(hashes.values()):
+        distinct = sorted({str(h) for h in hashes.values()})
+        shown = ", ".join(h[:12] for h in distinct)
+        lines.append(f"Value-hint set sha256: {shown}")
+    return lines
 
 
 def load_runs_with_meta(
@@ -159,6 +226,10 @@ def render(
     arms = _ordered(runs)
     n = len(runs[arms[0]])
     out: list[str] = ["# Execution accuracy by arm", ""]
+
+    header = _header_lines(arms, metas or {})
+    if header:
+        out += [f"> {line}" for line in header] + [""]
 
     fake_arms = [a for a in arms if (models or {}).get(a) == "fake"]
     if fake_arms:

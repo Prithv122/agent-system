@@ -16,9 +16,11 @@ Three rules protect the measurement:
 Resuming and running more than one arm have two further guards:
 
 - A resumed run must have the same setup as the one that wrote the rows: model, golden file hash,
-  attempt budget, explainer and value-hint switches are read back from the sidecar and compared.
-  Any difference refuses the resume (`ResumeMismatchError`) and leaves the files as they were,
-  because rows from two setups under one attribution would be a result nobody ran.
+  attempt budget, explainer and value-hint switches, the frozen model configuration (model id,
+  Ollama digest, generation settings) and the hash of the value-hint set are read back from the
+  sidecar and compared. Any difference refuses the resume (`ResumeMismatchError`) and leaves the
+  files as they were, because rows from two setups under one attribution would be a result
+  nobody ran.
 - Arms run **sequentially**, never in parallel. Arm A's first writer reply is cached once and
   served to arms B and C (their first prompt is byte-identical), which is what makes the arms
   nested. The cache directory is single-writer, so a run holds ``<cache_dir>/.run.lock`` for its
@@ -41,6 +43,7 @@ import duckdb
 from ._vendor.results import ResultSet
 from .golden import digest, reference_result
 from .models import ARMS, EvalRow, GoldenQuestion
+from .schema import value_hint_set, value_hint_sha256
 from .score import grade
 
 
@@ -145,12 +148,14 @@ def run_arm(
     golden_path: Path | None = None,
     value_hints: bool = False,
     lock_dir: Path | None = None,
+    model_config: dict[str, Any] | None = None,
 ) -> list[EvalRow]:
     """Answer every question under ``arm`` and return the scored rows (resumed ones included).
 
     Run the arms one after another, not in parallel (see the module docstring). With ``lock_dir``
     (the cache directory) the run holds ``<lock_dir>/.run.lock`` and refuses to start while
-    another run does.
+    another run does. ``model_config`` is `llm.describe(provider)` (frozen into the sidecar); left
+    out, ``{"provider": "unspecified"}`` is recorded.
     """
     with contextlib.ExitStack() as stack:
         if lock_dir is not None:
@@ -167,6 +172,7 @@ def run_arm(
             resume=resume,
             golden_path=golden_path,
             value_hints=value_hints,
+            model_config=model_config,
         )
 
 
@@ -208,6 +214,7 @@ def _run_arm(
     resume: bool,
     golden_path: Path | None,
     value_hints: bool,
+    model_config: dict[str, Any] | None,
 ) -> list[EvalRow]:
     from . import loop
 
@@ -243,6 +250,7 @@ def _run_arm(
         "max_attempts": max_attempts,
         "explain": explain,
         "value_hints": value_hints,
+        "model_config": model_config if model_config is not None else {"provider": "unspecified"},
         "golden_sha256": golden_sha256(questions, golden_path),
         "questions": len(questions),
         "resumed_rows": len(done),
@@ -250,10 +258,23 @@ def _run_arm(
         "started_utc": started,
         "finished_utc": None,
     }
+    if value_hints:
+        # The exact hints the model is shown, not just the switch: a changed warehouse changes them.
+        hint_set = value_hint_set(con)
+        meta["value_hints_set"] = hint_set
+        meta["value_hints_sha256"] = value_hint_sha256(hint_set)
     if resume and done:
         identity = {
-            key: meta[key]
-            for key in ("model", "golden_sha256", "max_attempts", "explain", "value_hints")
+            key: meta.get(key)
+            for key in (
+                "model",
+                "golden_sha256",
+                "max_attempts",
+                "explain",
+                "value_hints",
+                "model_config",
+                "value_hints_sha256",
+            )
         }
         previous = check_resume(meta_file, identity, out_path)
         meta["started_utc"] = previous.get("started_utc", started)
