@@ -14,6 +14,7 @@ import duckdb
 import pytest
 
 from analyst._vendor import warehouse
+from analyst.executor import open_readonly
 
 # A key stored on the developer's machine must never turn a test into a live call.
 os.environ["SECRETS_NO_KEYRING"] = "1"
@@ -29,9 +30,8 @@ def warehouse_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 @pytest.fixture
 def ro_con(warehouse_path: Path) -> Iterator[duckdb.DuckDBPyConnection]:
-    """The agent's view: read-only, no file or network access from SQL."""
-    con = duckdb.connect(
-        str(warehouse_path), read_only=True, config={"enable_external_access": False}
-    )
+    """The agent's view, opened exactly as production does: read-only, no file or network
+    access from SQL, configuration locked."""
+    con = open_readonly(warehouse_path)
     yield con
     con.close()

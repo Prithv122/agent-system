@@ -41,6 +41,7 @@ def cmd_ask(args: argparse.Namespace) -> int:
             con,
             max_attempts=args.attempts,
             explain=not args.no_explain,
+            value_hints=getattr(args, "value_hints", False),
         )
     except ProviderError as exc:
         print(f"error: the model could not answer: {exc}", file=sys.stderr)

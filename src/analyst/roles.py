@@ -44,6 +44,15 @@ Rules:
 _QUESTION_BLOCK = re.compile(r"QUESTION:\n(.*?)\n(?:\n|\Z)", re.DOTALL)
 _SQL_FENCE = re.compile(r"```sql\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
 
+#: The most result rows the explainer is shown. The faithfulness check imports it, so "only the
+#: first 50 are shown" is supported by the same number the prompt used.
+SHOWN_ROWS = 50
+
+SCHEMA_SHOWN_NOTE = (
+    "NOTE: you asked to see the schema again. The SCHEMA block above is the complete schema and "
+    "has nothing more to show. Reply with a sql action or a refuse action."
+)
+
 WriterKind = Literal["sql", "get_schema", "refuse", "invalid"]
 
 
@@ -54,8 +63,21 @@ class WriterAction:
     detail: str = ""
 
 
-def writer_prompt(question: str, schema: str, history: list[tuple[str, str]]) -> str:
-    """The writer's user message. ``history`` is (sql, error) for each failed earlier attempt."""
+def writer_prompt(
+    question: str,
+    schema: str,
+    history: list[tuple[str, str]],
+    *,
+    schema_requested: bool = False,
+) -> str:
+    """The writer's user message. ``history`` is (sql, error) for each failed earlier attempt.
+
+    ``schema_requested`` is set once the writer has asked to see the schema again (a free,
+    one-time request). The prompt then carries a short note saying the schema above is complete,
+    so it differs from the one that produced the request. Without it a deterministic or cached
+    model would be sent the identical text and ask again. The note never mentions the attempt
+    budget, and the first prompt of a question is unchanged, so the arms still share it.
+    """
     parts = [f"SCHEMA:\n{schema}\n", f"QUESTION:\n{question.strip()}\n"]
     if history:
         attempts = [
@@ -63,6 +85,8 @@ def writer_prompt(question: str, schema: str, history: list[tuple[str, str]]) ->
             for i, (sql, error) in enumerate(history, start=1)
         ]
         parts.append("PREVIOUS ATTEMPTS (all failed):\n" + "\n\n".join(attempts) + "\n")
+    if schema_requested:
+        parts.append(SCHEMA_SHOWN_NOTE + "\n")
     parts.append("Reply with the JSON object now.")
     return "\n".join(parts)
 
@@ -98,7 +122,7 @@ def parse_writer_reply(text: str) -> WriterAction:
     return WriterAction("invalid", None, f'unknown or missing "action": {action!r}')
 
 
-def explainer_prompt(question: str, sql: str, result: ResultSet, max_rows: int = 50) -> str:
+def explainer_prompt(question: str, sql: str, result: ResultSet, max_rows: int = SHOWN_ROWS) -> str:
     """The explainer's user message: the question, the SQL, and up to ``max_rows`` result rows."""
     shown = result.rows[:max_rows]
     lines = [" | ".join(result.column_names)]

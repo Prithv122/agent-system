@@ -8,6 +8,7 @@ import pytest
 
 from analyst._vendor.results import Column, ResultSet
 from analyst.faithfulness import check, numbers_in
+from analyst.roles import SHOWN_ROWS
 
 
 def dec(*values: str) -> list[Decimal]:
@@ -180,11 +181,55 @@ def test_question_exemption_is_exact_not_fuzzy() -> None:
     assert not check("top 50", r, question="top 5").faithful
 
 
-def test_dates_in_cells_support_year_month_day() -> None:
+def test_dates_in_cells_support_their_year_only() -> None:
     r = result(["d"], [("2025-03-01",), ("2024-12-31",)])
-    rep = check("Orders from 2025 and 2024, in month 3 and 12.", r)
+    rep = check("Orders from 2025 and 2024.", r)
     assert rep.faithful, rep.unsupported
     assert not check("Orders from 2023.", r).faithful
+
+
+def test_day_and_month_numbers_of_a_date_cell_support_nothing() -> None:
+    r = result(["d"], [("2025-03-17",)])
+    assert not check("17 customers signed up.", r).faithful
+    assert not check("In month 3 there were orders.", r).faithful
+    # the row count is a different quantity and still works
+    assert check("1 customer signed up in 2025.", r).faithful
+
+
+def test_shown_row_cap_is_supported_when_the_result_is_longer() -> None:
+    r = result(["n"], [(1000 + i,) for i in range(120)])
+    rep = check("The query returned 120 rows; only the first 50 are shown.", r)
+    assert rep.faithful, rep.unsupported
+    # a short result shows everything: 50 is not supported when only 7 rows exist
+    short = result(["n"], [(1000 + i,) for i in range(7)])
+    assert not check("Only the first 50 are shown.", short).faithful
+    assert SHOWN_ROWS == 50  # the explainer prompt's cap, imported from one place
+
+
+def test_zero_written_without_decimals_needs_an_exact_zero() -> None:
+    assert not check("0 percent of orders", result(["share"], [(0.31,)])).faithful
+    assert not check("0% of orders", result(["share"], [(0.31,)])).faithful
+    assert not check("0 customers", result(["x"], [(0.4,)])).faithful
+    assert check("0 percent of orders", result(["share"], [(0,)])).faithful
+    assert check("0 customers", result(["x"], [(0,)])).faithful
+    assert check("0 customers", result(["name"], [])).faithful  # the row count is 0
+    # rounding with decimals is untouched
+    assert check("about 0.3", result(["x"], [(0.31,)])).faithful
+    assert check("about 1", result(["x"], [(0.6,)])).faithful
+
+
+def test_row_count_times_100_does_not_support_a_percent() -> None:
+    one_row = result(["name"], [("a",)])
+    assert not check("100% of customers", one_row).faithful
+    assert not check("100 percent", one_row).faithful
+    # the row count itself still supports a plain count
+    assert check("1 customer", one_row).faithful
+    # a real ratio cell still does, as a ratio and as percent units
+    assert check("100% of orders", result(["share"], [(1.0,)])).faithful
+    assert check("100% of orders", result(["share"], [(100,)])).faithful
+    # a row count does not support a percent as written either
+    twelve = result(["n"], [("x",)] * 12)
+    assert not check("12% of orders", twelve).faithful
 
 
 def test_text_cells_contribute_embedded_numbers() -> None:

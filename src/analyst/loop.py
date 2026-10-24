@@ -37,20 +37,25 @@ def answer(
     explain: bool = True,
     timeout_s: float = 10.0,
     row_limit: int | None = None,
+    value_hints: bool = False,
 ) -> Trace:
     trace = Trace(question=question)
-    schema = schema_text(con)
+    schema = schema_text(con, value_hints=value_hints)
     history: list[tuple[str, str]] = []  # (sql, error) of failed attempts, shown to the writer
     schema_requested = False
+    # What the question ends as if attempts run out: the outcome of the last attempt that
+    # produced SQL, or budget_exhausted when none did.
     outcome: Outcome = "budget_exhausted"
     while trace.attempts < max_attempts:
-        prompt = writer_prompt(question, schema, history)
+        prompt = writer_prompt(question, schema, history, schema_requested=schema_requested)
         reply = provider.complete(prompt, system=WRITER_SYSTEM, temperature=0.0, json_object=True)
         action = parse_writer_reply(reply.text)
         writer = _llm_step("writer", prompt, reply)
         trace.steps.append(writer)
         if action.kind == "get_schema" and not schema_requested:
-            schema_requested = True  # free once: the schema is already in the prompt
+            # Free once: the schema is already in the prompt. The next prompt says so, which makes
+            # it differ from this one; otherwise a temperature-0 or cached model asks again.
+            schema_requested = True
             trace.steps.append(Step("get_schema", output=schema))
             continue
         trace.attempts += 1
@@ -61,8 +66,7 @@ def answer(
         if action.sql is None:
             writer.error = action.detail or "the reply did not contain a query"
             history.append(("", writer.error))
-            outcome = "budget_exhausted"
-            continue
+            continue  # outcome stays that of the last attempt that produced SQL, if any
         sql = action.sql
         check = validate(con, sql)
         step_kind: StepKind = "guard" if check.kind == "guard" else "validate"

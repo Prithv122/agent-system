@@ -58,3 +58,33 @@ def test_ask_leaves_the_warehouse_untouched(
         assert con.execute("SELECT count(*) FROM customers").fetchone() == (400,)
     finally:
         con.close()
+
+
+def test_ask_passes_value_hints_through_only_when_the_flag_exists(
+    warehouse_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import argparse
+
+    from analyst import commands_core
+
+    seen: list[bool] = []
+    real = commands_core.answer
+
+    def spy(*args: object, **kwargs: object):
+        seen.append(bool(kwargs.get("value_hints")))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(commands_core, "answer", spy)
+    base = dict(
+        question="q?",
+        fake=True,
+        db=warehouse_path,
+        attempts=3,
+        no_explain=True,
+        json=False,
+        model=None,
+        replay=False,
+    )
+    commands_core.cmd_ask(argparse.Namespace(**base))
+    commands_core.cmd_ask(argparse.Namespace(**base, value_hints=True))
+    assert seen == [False, True]

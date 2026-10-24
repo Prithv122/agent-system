@@ -218,3 +218,107 @@ def test_row_limit_is_applied(con) -> None:
         row_limit=7,
     )
     assert trace.result is not None and len(trace.result.rows) == 7
+
+
+# --- get_schema is a dead end only if the next prompt is byte-identical (M1) ---------------
+
+
+class PromptKeyedProvider:
+    """Deterministic like a temperature-0 or cached model: one reply per distinct prompt.
+
+    The first distinct prompt gets a get_schema request, every later distinct prompt gets SQL.
+    The same prompt always gets the same reply, which is what the replay cache does.
+    """
+
+    name = "keyed"
+    model = "keyed"
+
+    def __init__(self, sql: str) -> None:
+        self.sql = sql
+        self.replies: dict[str, str] = {}
+
+    def complete(self, prompt: str, **_: object):
+        from analyst.fake import _response
+
+        if prompt not in self.replies:
+            self.replies[prompt] = (
+                '{"action": "get_schema"}' if not self.replies else sql_reply(self.sql)
+            )
+        return _response(prompt, self.replies[prompt])
+
+
+@pytest.mark.parametrize("max_attempts", [1, 2, 3])
+def test_one_attempt_arm_recovers_after_a_schema_request(con, max_attempts: int) -> None:
+    provider = PromptKeyedProvider(GOOD)
+    trace = answer(Q, provider, con, max_attempts=max_attempts, explain=False)
+    assert trace.outcome == "ok" and trace.attempts == 1
+    assert len(provider.replies) == 2  # the second prompt differs from the first
+    first, second = list(provider.replies)
+    assert first != second and "complete schema" in second
+
+
+def test_first_prompt_is_identical_across_arms(con) -> None:
+    firsts = []
+    for max_attempts in (1, 2, 3):
+        provider = ScriptedProvider([sql_reply(GOOD)])
+        answer(Q, provider, con, max_attempts=max_attempts, explain=False)
+        firsts.append(provider.prompts[0])
+    assert len(set(firsts)) == 1
+
+
+def test_schema_note_stays_in_later_prompts_and_get_schema_stays_free_once(con) -> None:
+    provider = ScriptedProvider(['{"action": "get_schema"}', sql_reply(BAD), sql_reply(GOOD)])
+    trace = answer(Q, provider, con, max_attempts=2, explain=False)
+    assert trace.outcome == "ok" and trace.attempts == 2
+    assert "complete schema" not in provider.prompts[0]
+    assert "complete schema" in provider.prompts[1] and "complete schema" in provider.prompts[2]
+    assert "PREVIOUS ATTEMPTS" in provider.prompts[2]
+
+
+# --- failure labels (L1) -------------------------------------------------------------------
+
+
+def test_invalid_last_reply_keeps_the_label_of_the_earlier_sql_failure(con) -> None:
+    provider = ScriptedProvider([sql_reply(BAD), "I am not sure what to do."])
+    trace = answer(Q, provider, con, max_attempts=2)
+    assert trace.attempts == 2 and trace.result is None
+    assert trace.outcome == "failed_validation"
+
+
+def test_invalid_last_reply_after_a_runtime_error_is_failed_execution(con) -> None:
+    runtime_bad = "SELECT CAST(name AS INTEGER) FROM customers"
+    provider = ScriptedProvider([sql_reply(runtime_bad), "nonsense", "more nonsense"])
+    trace = answer(Q, provider, con, max_attempts=3)
+    assert trace.outcome == "failed_execution"
+
+
+def test_budget_exhausted_only_when_no_attempt_produced_sql(con) -> None:
+    trace = answer(Q, ScriptedProvider(["nonsense", "nope"]), con, max_attempts=2)
+    assert trace.outcome == "budget_exhausted"
+
+
+def test_refusal_after_failed_sql_is_still_budget_exhausted(con) -> None:
+    provider = ScriptedProvider([sql_reply(BAD), '{"action": "refuse", "reason": "give up"}'])
+    trace = answer(Q, provider, con, max_attempts=3)
+    assert trace.outcome == "budget_exhausted"
+
+
+def test_guard_refusal_after_an_earlier_failure_stays_refused_unsafe(con) -> None:
+    provider = ScriptedProvider([sql_reply(BAD), sql_reply("DROP TABLE orders")])
+    trace = answer(Q, provider, con, max_attempts=3)
+    assert trace.outcome == "refused_unsafe"
+
+
+# --- value hints (default off) -------------------------------------------------------------
+
+
+def test_value_hints_reach_the_writer_prompt_only_when_asked(con) -> None:
+    off = ScriptedProvider([sql_reply(GOOD)])
+    answer(Q, off, con, explain=False)
+    on = ScriptedProvider([sql_reply(GOOD)])
+    answer(Q, on, con, explain=False, value_hints=True)
+    assert "status VARCHAR)" in off.prompts[0] and "{cancelled" not in off.prompts[0]
+    assert "status VARCHAR {cancelled, completed, returned}" in on.prompts[0]
+    explicit_off = ScriptedProvider([sql_reply(GOOD)])
+    answer(Q, explicit_off, con, explain=False, value_hints=False)
+    assert explicit_off.prompts[0] == off.prompts[0]

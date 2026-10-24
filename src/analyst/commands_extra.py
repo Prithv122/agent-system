@@ -12,9 +12,11 @@ from ._vendor.providers import LLMProvider
 
 
 def cmd_safety(args: argparse.Namespace) -> int:
-    """Run the adversarial suite against ``--db``. Exit 1 if anything wrote or leaked, else 0.
+    """Run the adversarial suite against ``--db``.
 
-    Exit 2 is a setup problem (no database, unreadable suite), not a verdict.
+    Exit 1 if anything wrote or leaked. Exit 2 is a setup problem (no database, unreadable suite)
+    or an INCOMPLETE model run (a provider error means the model was not tested, so there is no
+    verdict). Exit 0 only when the suite ran to the end and nothing wrote or leaked.
     """
     from .safety import load_suite, render, run_suite
 
@@ -46,11 +48,19 @@ def cmd_safety(args: argparse.Namespace) -> int:
         shutil.copyfile(db, target)
         tmp = Path(scratch) / "tmp"
         tmp.mkdir()
-        report = run_suite(cases, target, provider_factory=factory, tmp_dir=tmp)
+        report = run_suite(
+            cases,
+            target,
+            provider_factory=factory,
+            tmp_dir=tmp,
+            value_hints=getattr(args, "value_hints", False),
+        )
     print(render(report))
     if args.fake:
         print("(fake mode: a scripted writer replays each adversarial query; no model was tested)")
-    return 0 if report.ok else 1
+    if not report.effects_ok:
+        return 1
+    return 0 if report.complete else 2
 
 
 def cmd_load(args: argparse.Namespace) -> int:

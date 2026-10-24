@@ -73,3 +73,20 @@ def test_explainer_prompt_counts_and_truncates() -> None:
     assert "ROW COUNT: 120 (first 50 shown)" in prompt
     assert "QUESTION:\nHow many?\n" in prompt
     assert "\n49\n" in prompt and "\n50\n" not in prompt
+
+
+def test_schema_requested_adds_a_note_and_changes_the_prompt() -> None:
+    plain = writer_prompt("q?", SCHEMA, [])
+    after = writer_prompt("q?", SCHEMA, [], schema_requested=True)
+    assert after != plain
+    assert "SCHEMA block above is the complete schema" in after
+    assert "complete schema" not in plain
+    # the question is still recoverable and the note sits before the closing instruction
+    assert question_from_prompt(after) == "q?"
+    assert after.rstrip().endswith("Reply with the JSON object now.")
+
+
+def test_first_prompt_never_mentions_the_attempt_budget() -> None:
+    prompt = writer_prompt("q?", SCHEMA, [])
+    for word in ("attempt budget", "attempts left", "last attempt", "max_attempts", "one attempt"):
+        assert word not in prompt.lower()

@@ -33,10 +33,15 @@ A mention is supported when ANY of these holds:
 2. **Matches a candidate from the result at the precision it was written.** The candidate is
    rounded half-up to as many decimals as the mention has, then compared. So "12.35" matches
    12.345678; "12" matches 12.4 (rounds to 12) but not 12.6; "1,235" matches 1234.56.
-   Candidates are every numeric cell, the row count, and the sum, mean, min and max of each
-   column whose non-null cells are all numeric.
-3. **Percent.** A mention marked as a percentage matches a cell either as written (the column
-   already holds percent units) or as a ratio (cell x 100): "12.5%" matches 0.125 and 12.5.
+   Candidates are every numeric cell, the row count, the number of rows the explainer was
+   shown (``min(row_count, SHOWN_ROWS)``, so "only the first 50 are shown" is supported), and the
+   sum, mean, min and max of each column whose non-null cells are all numeric.
+   A mention written as 0 with no decimals ("0 customers", "0 percent") is the exception to
+   rounding: it is supported only by a candidate that is exactly zero, never by 0.31 or 0.4.
+3. **Percent.** A mention marked as a percentage matches a numeric cell (or a column aggregate)
+   either as written (the column already holds percent units) or as a ratio (value x 100):
+   "12.5%" matches 0.125 and 12.5. The row count, the shown-row count and dates are not
+   percentages and never support one: with 1 row, "100%" is not supported by 1 x 100.
 4. **Scale.** "1.2M" matches a candidate of 1,150,000 to 1,249,999 (rounded to one decimal in
    millions); the suffix changes the unit, not the leniency.
 
@@ -46,8 +51,9 @@ Leniencies chosen on purpose, all documented here so none is a surprise:
 * **Numeric strings are numeric.** DECIMAL cells arrive as strings ("1234.50"); a string that is
   wholly a number is parsed as one.
 * **Text cells contribute the numbers inside them** ("Widget 42" supports 42), and ISO date or
-  timestamp cells contribute their year, month and day ("2025-03-01" supports 2025, 3 and 1), so
-  "orders placed in 2025" is not flagged when the date column says so.
+  timestamp cells contribute their year only ("2025-03-01" supports 2025), so "orders placed in
+  2025" is not flagged when the date column says so. Month and day numbers are not contributed:
+  a day of 17 must not make "17 customers" look supported.
 * **Empty is vacuous.** An explanation with no numbers is faithful. A missing result supports
   nothing, so every number in the explanation is then unsupported unless the question has it.
 
@@ -65,6 +71,7 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
 from ._vendor.results import ResultSet
+from .roles import SHOWN_ROWS
 
 _DATE = r"\d{4}-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?"
 _TIME = r"\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?"
@@ -73,7 +80,9 @@ _DATETIME_RE = re.compile(
     rf"(?<![\d-])(?:{_DATE}(?:[ T]{_TIME}(?:Z|[+-]\d{{2}}:?\d{{2}})?)?)(?![\d])"
 )
 _TIME_RE = re.compile(rf"(?<![\d:]){_TIME}(?![\d:])")
-_DATE_PARTS_RE = re.compile(r"(?<![\d-])(\d{4})-(0[1-9]|1[0-2])(?:-(0[1-9]|[12]\d|3[01]))?(?!\d)")
+_DATE_YEAR_RE = re.compile(
+    r"(?<![\d-])(\d{4})-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?(?!\d)"
+)
 
 _NUM_RE = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?|(?<![\w.])\.\d+")
 _CURRENCY = "$£€₹"
@@ -218,11 +227,22 @@ def _flatten(value: Any) -> list[Any]:
     return [value]
 
 
-def candidates(result: ResultSet | None) -> list[Decimal]:
-    """Every figure the result supports: cells, row count, and per-column sum/mean/min/max."""
+@dataclass(frozen=True)
+class _Candidate:
+    value: Decimal
+    ratio: bool  # a numeric cell or aggregate: may also match a percent as value x 100
+    percent_ok: bool  # may match a percent mention as written
+
+
+def _candidate_pool(result: ResultSet | None) -> list[_Candidate]:
     if result is None:
         return []
-    out: list[Decimal] = [Decimal(len(result.rows))]
+    n = len(result.rows)
+    # counts and years are quantities, not percentages: they never support a percent mention
+    out: list[_Candidate] = [
+        _Candidate(Decimal(n), False, False),
+        _Candidate(Decimal(min(n, SHOWN_ROWS)), False, False),
+    ]
     for ci in range(len(result.columns)):
         numeric: list[Decimal] = []
         all_numeric = True
@@ -233,27 +253,42 @@ def candidates(result: ResultSet | None) -> list[Decimal]:
                 num = _cell_number(cell)
                 if num is not None:
                     numeric.append(num)
-                    out.append(num)
+                    out.append(_Candidate(num, True, True))
                 else:
                     all_numeric = False
                     if isinstance(cell, str):
-                        out.extend(abs(v) for v in numbers_in(cell))
-                        for y, mo, d in _DATE_PARTS_RE.findall(cell):
-                            out.extend(Decimal(p) for p in (y, mo, d) if p)
+                        out.extend(_Candidate(abs(v), False, True) for v in numbers_in(cell))
+                        out.extend(
+                            _Candidate(Decimal(y), False, False)
+                            for y in _DATE_YEAR_RE.findall(cell)
+                        )
         if numeric and all_numeric:
             total = sum(numeric, Decimal(0))
-            out.extend([total, total / len(numeric), min(numeric), max(numeric)])
+            for value in (total, total / len(numeric), min(numeric), max(numeric)):
+                out.append(_Candidate(value, True, True))
     return out
 
 
-def _matches(mention: Mention, candidate: Decimal) -> bool:
+def candidates(result: ResultSet | None) -> list[Decimal]:
+    """Every figure the result supports: cells, counts, and per-column sum/mean/min/max."""
+    return [c.value for c in _candidate_pool(result)]
+
+
+def _matches(mention: Mention, candidate: _Candidate) -> bool:
     quantum = Decimal(1).scaleb(-mention.decimals)
     target = abs(mention.written)
-    options = [candidate]
     if mention.percent:
-        options.append(candidate * 100)
+        options = []
+        if candidate.percent_ok:
+            options.append(candidate.value)
+        if candidate.ratio:
+            options.append(candidate.value * 100)
+    else:
+        options = [candidate.value]
     for option in options:
         scaled = abs(option).scaleb(-mention.scale_exp)
+        if target == 0 and mention.decimals == 0 and scaled != 0:
+            continue  # "0" is not a rounding of 0.31
         if scaled.quantize(quantum, rounding=ROUND_HALF_UP) == target.quantize(quantum):
             return True
     return False
@@ -263,7 +298,7 @@ def check(explanation: str, result: ResultSet | None, *, question: str = "") -> 
     """Report which numbers in ``explanation`` are supported by ``result`` (rules: module doc)."""
     mentions = _mentions(explanation)
     asked = {abs(v) for v in numbers_in(question)}
-    pool = candidates(result)
+    pool = _candidate_pool(result)
     supported: list[Decimal] = []
     unsupported: list[Decimal] = []
     from_question: list[Decimal] = []
