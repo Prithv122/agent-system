@@ -73,6 +73,17 @@ test each:
   the 10 s timeout could behave differently on replay (all 36 references run well under 1 s);
   `capture` rounds doubles to 6 places before the tolerance applies (irrelevant to this golden set).
 
+### Local CI record — 2026-10-25, commit `5d92557`
+
+Hosted CI was unavailable (no GitHub repo yet; the account's Actions limit runs to 2026-11-02), so
+`.github/workflows/ci.yml` was replayed step by step on a fresh clone of `5d92557` with a fresh
+install (`UV_NO_CACHE=1`, `SECRETS_NO_KEYRING=1`, `uv sync --all-groups --extra excel`): ruff check and
+format clean; **345 passed**, coverage 92%; `build-db`; `golden` 36 OK; `ask --fake` ok; `safety --fake`
+PASS; fake arms A and C on the 6 example rows (2/6 and 6/6, a pipeline check) and `report`.
+Differences from the hosted runner: Windows 11 instead of Ubuntu, `--basetemp` in a scratch folder,
+`-p no:cacheprovider`. The first replay (at `70e01bb`) failed one test on a CRLF checkout, which led to
+`.gitattributes`.
+
 ---
 
 ## Rejected approaches
