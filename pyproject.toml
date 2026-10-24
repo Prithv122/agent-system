@@ -1,0 +1,40 @@
+[project]
+name = "agent-system"
+version = "0.1.0"
+description = "A question-to-SQL agent that checks its SQL with the database's own parser and EXPLAIN before running it read-only, and measures whether that repair loop actually raises execution accuracy"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+# Console entry points need a real build backend: a uv virtual project
+# ([tool.uv] package = false) installs nothing, so the documented command fails
+# with "No module named ..." even while tests pass (pytest's pythonpath hides it).
+[project.scripts]
+analyst = "analyst.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# Keep this path and the [project.scripts] target above in step when renaming the package.
+[tool.hatch.build.targets.wheel]
+packages = ["src/analyst"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "ruff>=0.9",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
