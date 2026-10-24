@@ -4,13 +4,20 @@ version = "0.1.0"
 description = "A question-to-SQL agent that checks its SQL with the database's own parser and EXPLAIN before running it read-only, and measures whether that repair loop actually raises execution accuracy"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "duckdb>=1.5.5",
+]
 
 # Console entry points need a real build backend: a uv virtual project
 # ([tool.uv] package = false) installs nothing, so the documented command fails
 # with "No module named ..." even while tests pass (pytest's pythonpath hides it).
 [project.scripts]
 analyst = "analyst.cli:main"
+
+[project.optional-dependencies]
+secrets = [
+    "keyring>=25",
+]
 
 [build-system]
 requires = ["hatchling"]
