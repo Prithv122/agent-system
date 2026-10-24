@@ -45,6 +45,12 @@ calls, tokens and latency?
   as numbers; a VARCHAR is never coerced).
 - **Column order [OWNER]:** proposed: a permutation of the expected columns counts as equal (the
   question names the columns, not their order). Extra or missing columns are wrong.
+- **Value hints in the schema [OWNER]:** a smoke test showed a 7B model writing
+  `status = 'Cancelled'` against data holding `'cancelled'`: valid SQL, wrong answer, nothing for
+  the loop to repair. Proposed: list the distinct values of low-cardinality text columns (<= 12
+  values) in the schema text, for every arm. It raises accuracy in all arms equally and keeps the
+  loop's effect measurable on errors it can see; without it, the null result would be partly a
+  prompt artefact.
 - **Lenient parsing, same for every arm:** a reply that is not JSON but contains a fenced SQL block
   is accepted as SQL.
 - **Attempt accounting:** each writer reply uses one attempt (SQL, unparseable, or a repeated schema
@@ -77,6 +83,7 @@ calls, tokens and latency?
 - [ ] Golden set reviewed and approved (`golden/AUTHORING.md` checklist)
 - [ ] Primary model chosen
 - [ ] Column-order rule confirmed
+- [ ] Value hints in the schema decided
 - [ ] Threshold confirmed
 
 Signed: ________ (owner) · Date: ________

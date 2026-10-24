@@ -36,6 +36,12 @@ Working notes: what broke, what was tried, why X over Y.
 - **Arms are nested by construction.** The writer prompt never mentions the attempt budget, so the
   first attempt is byte-identical in A, B and C and the replay cache serves it once. Any difference
   between arms comes only from repair attempts, and a full run costs at most 36 x 3 writer calls.
+- **Smoke test, real local model (qwen2.5 7B, a question outside the golden set):** "How many
+  orders were cancelled in 2025?" -> `WHERE status = 'Cancelled'`. The data says `'cancelled'`, so the
+  query was valid, ran, and returned 0; the explainer then faithfully said "No orders were cancelled
+  in 2025." Wrong answer, every check green. **The repair loop only sees errors the database
+  reports**; a wrong literal is silent. Writer 33 s, explainer 13 s on this machine. This makes the
+  schema-hint question an owner decision before the run (see `EVAL_PLAN.md` section 4).
 - **Slow:** building the warehouse takes 20–60 s (the vendored loader inserts through large literal
   INSERT statements). Tests build it once per session.
 
