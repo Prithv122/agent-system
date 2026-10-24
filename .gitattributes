@@ -1,0 +1,3 @@
+# LF everywhere: run metadata hashes the golden file bytes, so a CRLF checkout would
+# not match a run recorded on another machine.
+* text=auto eol=lf
