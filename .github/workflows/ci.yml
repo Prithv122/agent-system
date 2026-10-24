@@ -9,6 +9,9 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      # A stored key must never turn a test into a live model call.
+      SECRETS_NO_KEYRING: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -21,7 +24,7 @@ jobs:
         run: uv python install
 
       - name: Install dependencies
-        run: uv sync --all-groups
+        run: uv sync --all-groups --extra excel
 
       - name: Lint
         run: |
@@ -30,3 +33,22 @@ jobs:
 
       - name: Test
         run: uv run pytest --cov=src --cov-report=term-missing
+
+      # Every step below uses the scripted writer: no model, no network.
+      - name: Build the warehouse
+        run: uv run analyst build-db
+
+      - name: Golden set runs read-only and matches its digests
+        run: uv run analyst golden
+
+      - name: Agent answers with the scripted writer
+        run: uv run analyst ask "How many customers are there in each segment?" --fake
+
+      - name: Adversarial suite executes zero writes
+        run: uv run analyst safety --fake
+
+      - name: Arms A and C run end to end on the example rows
+        run: |
+          uv run analyst eval --arm A --fake --golden tests/fixtures/example.jsonl --out "$RUNNER_TEMP/runs"
+          uv run analyst eval --arm C --fake --golden tests/fixtures/example.jsonl --out "$RUNNER_TEMP/runs"
+          uv run analyst report "$RUNNER_TEMP/runs/armA.jsonl" "$RUNNER_TEMP/runs/armC.jsonl"
