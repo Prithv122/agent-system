@@ -84,6 +84,24 @@ Differences from the hosted runner: Windows 11 instead of Ubuntu, `--basetemp` i
 `-p no:cacheprovider`. The first replay (at `70e01bb`) failed one test on a CRLF checkout, which led to
 `.gitattributes`.
 
+### 2026-10-25 — owner review applied, pre-freeze checks
+
+- Owner decisions (from two pasted reviews): `qwen-coder-7b`; positional columns on 34/36; value
+  hints on, mechanical, identical across arms; primary rule = C > A with a paired 95% CI excluding 0,
+  +10 points reported separately; revise sessionization-1/-2; audit normalisation; no freeze, sign
+  or run until a pre-freeze report is confirmed.
+- Sessionization moved to a 10-minute rule instead of changing the shared warehouse: the data's
+  intra-visit gaps (5 s to 20 min) put 5,370 gaps below, 8 exactly at and 6,523 above 10 minutes.
+- Added: `golden/crosscheck.py` (plain-Python recompute, 36/36), a degenerate-reference rule,
+  `golden/audit_scorer.py` (575 variants, 0 surprises), and model pinning in every run's sidecar
+  (Ollama digest `bb739a02927e...`, generation settings, hint set and hash).
+- Open for the owner: arm C's budget (brief: 3 attempts; one review note said "three repairs"),
+  `employees.title` in the hints (titles follow the reporting chain exactly, so title-based and
+  chain-based VP lookups agree).
+- Local CI on a fresh clone of `4e64b11`: ruff clean, **411 passed**, coverage 93%, build-db, golden
+  36 OK, ask / safety / eval / report with the scripted writer green. Same differences from the
+  hosted runner as before.
+
 ---
 
 ## Rejected approaches
