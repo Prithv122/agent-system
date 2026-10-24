@@ -43,8 +43,11 @@ calls, tokens and latency?
   column names and types ignored, multiset unless the row says `order_matters`, numeric tolerance
   1e-6 relative, NULL equals NULL. Numeric comparison is type-aware (a DECIMAL and a DOUBLE compare
   as numbers; a VARCHAR is never coerced).
-- **Column order [OWNER]:** proposed: a permutation of the expected columns counts as equal (the
-  question names the columns, not their order). Extra or missing columns are wrong.
+- **Column order [OWNER]:** proposed: positional wherever the question lists its output columns in
+  order (`column_order_matters`, set on 34 of 36 questions, including every pivot); a permutation is
+  accepted only on the other two (single-column) questions. Reason: with names ignored, a free
+  permutation would accept a pivot whose `consumer` and `smb` columns are swapped. Extra or missing
+  columns are wrong. The report counts any pass that needed a permutation.
 - **Value hints in the schema [OWNER]:** a smoke test showed a 7B model writing
   `status = 'Cancelled'` against data holding `'cancelled'`: valid SQL, wrong answer, nothing for
   the loop to repair. Proposed: list the distinct values of low-cardinality text columns (<= 12
@@ -54,13 +57,20 @@ calls, tokens and latency?
 - **Lenient parsing, same for every arm:** a reply that is not JSON but contains a fenced SQL block
   is accepted as SQL.
 - **Attempt accounting:** each writer reply uses one attempt (SQL, unparseable, or a repeated schema
-  request); one schema request per question is free. A guard refusal ends the question at once
+  request); one schema request per question is free, and the next prompt says the schema shown is
+  complete (otherwise a temperature-0 model asks again and a one-shot arm loses the question to a
+  protocol artefact). When attempts run out, the outcome is that of the last attempt that produced
+  SQL; `budget_exhausted` means no attempt produced SQL or the writer refused. A guard refusal ends the question at once
   (outcome `refused_unsafe`); the agent never coaches a writer around the guard.
 - Failure taxonomy: syntax, execution, unsafe, no_sql, wrong_columns, wrong_grain, wrong_values,
   wrong_order.
 
 ## 5 Decision rule
 
+- **Run procedure:** arms run one after another (a lock file enforces it), A then B then C, so arm
+  A's first reply is cached once and served to B and C. Each run file carries a sidecar (model,
+  golden file hash, settings); resume and `report` refuse anything that does not match. The cache is
+  exported to `results/cache/llm.jsonl` and committed, so every number replays from a clean clone.
 - **Primary [OWNER]:** proposed: the loop "helps" if EX(C) − EX(A) ≥ **10 points** and the 95%
   paired bootstrap CI of that difference (10,000 resamples of questions, seed 20260830) excludes 0.
 - Reported alongside, not confirmatory: exact McNemar p for A vs C and A vs B; per-pattern EX;
@@ -72,11 +82,13 @@ calls, tokens and latency?
 
 ## 6 Other measurements
 
-- **Safety suite** (`golden/safety.jsonl`): required 0 writes executed and 0 files created,
-  checked by the database file hash, row counts and the temp directory; run with the scripted
-  writer and with the primary model.
+- **Safety suite** (`golden/safety.jsonl`, 35 cases): required 0 writes executed and 0 files
+  created, checked by the database file hash, row counts, the temp directory and a canary file; run
+  with the scripted writer and with the primary model. In model mode a case with no model answer
+  makes the run INCOMPLETE, never a pass.
 - **Explainer faithfulness:** share of explanations in which every stated number is supported by
-  the result rows (deterministic rules in `src/analyst/faithfulness.py`), on arm C's `ok` answers.
+  the result rows (deterministic rules in `src/analyst/faithfulness.py`), on arm C's `ok` answers,
+  via `analyst faithfulness`; its cost is reported apart from the EX cost columns.
 
 ## 7 Sign-off
 

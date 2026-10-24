@@ -35,7 +35,7 @@ making is the measured effect of the validator loop, not the number of agents.
 | Licence | MIT (generated data, no third-party content) |
 | Refresh | Deterministic from seed 20260830; `analyst build-db` rebuilds it identically |
 | Golden set | 36 questions, 12 SQL patterns x 3 (running totals, lag/lead, ranking, top-N per group, recursive hierarchy, date spine, gaps and islands, subscription lapses, sessionization, pivot, conditional aggregation, tie-safe ranking), each with reference SQL — **draft, under owner review** |
-| Safety suite | 31 adversarial cases (`golden/safety.jsonl`) |
+| Safety suite | 35 adversarial cases (`golden/safety.jsonl`) |
 
 The data is **synthetic and small**. It was built so that every SQL pattern has something real to
 find (heavy-tailed spend, overlapping and lapsing subscriptions, visit gaps either side of a session
@@ -76,7 +76,7 @@ flowchart LR
 | Orchestration | A plain loop (`loop.py`, ~60 lines of control flow) | LangGraph / CrewAI | The loop is what is being measured; a framework hides it and adds a dependency tree |
 | Write protection | Three independent layers: parser guard, read-only connection, external access off and locked | A keyword blocklist | A `SELECT * FROM read_csv('C:/...')` is a SELECT: the guard passes it, and only the locked connection stops the file read. Each layer covers a hole in the others |
 | Arms | Differ only in max attempts (1 / 2 / 3); the prompt never mentions the budget | Separate prompts per arm | The first attempt is byte-identical in every arm, so the replay cache nests them and any difference comes only from repairs |
-| Result equality | Values only, multiset unless the question fixes an order, type-aware numbers with 1e-6 relative tolerance, column order free | Strict names and types | Strict equality measures naming luck (`total` vs `revenue`), not correctness |
+| Result equality | Values only, multiset unless the question fixes a row order, type-aware numbers with 1e-6 relative tolerance, columns positional where the question lists them | Strict names and types; or free column order | Strict names measure naming luck (`total` vs `revenue`); free column order would accept a pivot with two same-typed columns swapped |
 | Failed guard | End the question (`refused_unsafe`) | Feed the reason back | Feeding it back teaches the writer to get around the guard |
 | Dynamic `PIVOT` | Ask the writer to list pivot values explicitly | Loosen the guard | DuckDB plans a PIVOT without an `IN` list as two statements; an exception for one statement shape is where holes start |
 | Provider errors | Stop the run | Score as wrong | An unreachable model is an infrastructure failure, not an accuracy result |
@@ -91,7 +91,7 @@ What is measured today, with the scripted writer (deterministic, no model):
 
 | Check | Result |
 |---|---|
-| Adversarial suite (31 cases) | 0 writes, 0 reads outside the database, database file hash unchanged. 24 stopped by the guard, 5 passed the guard and were stopped by the locked connection (local and network file reads), 2 harmless controls ran |
+| Adversarial suite (35 cases) | 0 writes, 0 reads outside the database, database file hash unchanged. 24 stopped by the guard; 5 passed the guard and were stopped by the locked connection (local and network file reads); 6 allowed and harmless (2 controls, a no-op checkpoint, and 3 engine-metadata reads, one of which discloses the database file path) |
 | Golden set | `analyst golden`: all 36 reference queries pass the guard and run on the read-only connection, with 1–55 rows each (draft; digests are frozen after review) |
 | Arms on 6 example questions, scripted faults | The pipeline separates arms as designed (a pipeline check, not a result) |
 
@@ -111,8 +111,18 @@ With a local model (needs [Ollama](https://ollama.com) and `ollama pull qwen2.5:
 
 ```bash
 uv run analyst ask "Which five products earned the most revenue from completed orders?" --model qwen-7b
-uv run analyst eval --arm C --model qwen-7b
+uv run analyst eval --arm A --model qwen-7b --out results/runs
+uv run analyst eval --arm C --model qwen-7b --out results/runs
 uv run analyst report results/runs/qwen-7b/armA.jsonl results/runs/qwen-7b/armC.jsonl
+```
+
+Arms run one after another (a lock enforces it) so the cache serves arm A's first reply to B and C.
+To publish a run so it replays from a clean clone:
+
+```bash
+uv run analyst cache export results/cache/llm.jsonl
+uv run analyst cache import results/cache/llm.jsonl
+uv run analyst eval --arm C --model qwen-coder-7b --replay
 ```
 
 Hosted models read `OPENROUTER_API_KEY` or `ANTHROPIC_API_KEY` from the environment (or the OS

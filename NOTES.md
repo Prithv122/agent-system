@@ -45,6 +45,34 @@ Working notes: what broke, what was tried, why X over Y.
 - **Slow:** building the warehouse takes 20–60 s (the vendored loader inserts through large literal
   INSERT statements). Tests build it once per session.
 
+### 2026-10-25 — independent review, then fixes
+
+A reviewer with no context of the build found no path for writer SQL to write or read files
+(about 30 bypass attempts against the locked connection), and these real defects, all fixed with a
+test each:
+
+- **Safety false PASS (high).** With a model, a run where every case hit a provider error (empty
+  replay cache, Ollama down) printed PASS and exited 0: no model had been tested. Now INCOMPLETE,
+  exit 2. A test had asserted the false PASS.
+- **Resume mixed models (high).** Resume checked only the arm, so `eval --arm A` for a second model
+  into the same folder served the first model's rows and rewrote the metadata. Now the sidecar
+  (model, golden hash, settings) must match, outputs go to `<dir>/<model>/`, and `report` refuses
+  mismatched arms and warns on incomplete or unfrozen runs.
+- **The free schema request was a trap.** After `get_schema` the next prompt was identical, so a
+  temperature-0 model asked again and burned an attempt: arm A lost the question while B and C
+  recovered. That would have inflated C − A with a protocol artefact. The follow-up prompt now says
+  the schema is complete.
+- **Free column order accepted mislabelled pivots.** With names ignored, swapping two same-typed
+  columns passed. Columns are now positional on the 34 questions that list their columns.
+- Also: replay cache anchored to the project root, with export/import for a committed bundle; a run
+  lock so arms run sequentially (parallel runs could race on arm A's first reply); outcome labels
+  keep the last SQL failure; faithfulness no longer lets a date's day number support "17
+  customers", a 0.31 cell support "0 percent", or a 1-row result support "100%"; the shown-row cap
+  is a supported number; fixtures use the production connection config.
+- **Not fixed, recorded:** execution outcomes are not cached, only model replies, so a query near
+  the 10 s timeout could behave differently on replay (all 36 references run well under 1 s);
+  `capture` rounds doubles to 6 places before the tolerance applies (irrelevant to this golden set).
+
 ---
 
 ## Rejected approaches
