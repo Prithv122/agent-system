@@ -2,9 +2,15 @@
 
 The evaluation (`runner`) runs with the explainer off, because EX measures the SQL. This module
 is the separate measurement of the explainer, as EVAL_PLAN.md section 6 describes: for each trace
-that ended ``ok`` it re-runs the recorded ``final_sql`` on the read-only database to rebuild the
-result, asks the explainer once for an explanation, and checks every number in it against the
-result rows with the deterministic rules in `faithfulness`.
+that ended ``ok`` it takes the result rows recorded in the trace, asks the explainer once for an
+explanation, and checks every number in it against those rows with the deterministic rules in
+`faithfulness`.
+
+The recorded rows are used, not a re-run of ``final_sql``, because a model's query without a full
+``ORDER BY`` returns its rows in a different order on each run (DuckDB aggregates in parallel). The
+explainer prompt lists the rows, so a re-run changed the prompt and the replay cache missed: 6 of
+26 prompts in the first live run. The recorded rows make the prompt a pure function of the trace.
+Only a trace written before results were recorded falls back to re-running the SQL.
 
 Its model calls are its own cost. They are reported on a separate line and never added to the
 cost columns of the EX report.
@@ -23,6 +29,7 @@ from typing import Any
 import duckdb
 
 from ._vendor.providers import ProviderError
+from ._vendor.results import ResultSet
 from .executor import ExecutionError, open_readonly, run
 from .faithfulness import check
 from .roles import EXPLAINER_SYSTEM, explainer_prompt
@@ -65,7 +72,8 @@ def score_traces(
         sql = str(record["final_sql"])
         base: dict[str, Any] = {"qid": record.get("qid"), "arm": record.get("arm")}
         try:
-            result = run(con, sql)
+            recorded = record.get("result")
+            result = ResultSet.from_dict(recorded) if recorded else run(con, sql)
         except ExecutionError as exc:
             row = {**base, "faithful": None, "error": f"could not rebuild the result: {exc}"}
         else:

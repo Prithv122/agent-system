@@ -110,3 +110,18 @@ def test_cli_errors_exit_2(
     empty = write_traces(tmp_path / "e.jsonl", trace("q1", outcome="failed_validation"))
     assert main(["faithfulness", str(empty), "--fake", "--db", str(warehouse_path)]) == 2
     assert capsys.readouterr().err.count("error:") == 2
+
+
+def test_recorded_rows_are_used_so_the_prompt_never_depends_on_row_order(con) -> None:
+    # Rows recorded in the trace, deliberately in an order a re-run would not produce.
+    recorded = {
+        "columns": [{"name": "segment", "type": "VARCHAR"}, {"name": "n", "type": "BIGINT"}],
+        "rows": [["smb", 108], ["consumer", 253], ["enterprise", 39]],
+    }
+    record = {**trace("q1", sql="SELECT 1 AS never_run"), "result": recorded}
+    provider = ScriptedProvider(["There are 3 segments: 108, 253 and 39 customers."])
+    rows = score_traces([record], provider, con)
+    assert rows[0]["faithful"] is True
+    prompt = provider.prompts[0]
+    assert prompt.index("smb") < prompt.index("consumer") < prompt.index("enterprise")
+    assert "never_run" in prompt  # the SQL is shown, but it was not executed
