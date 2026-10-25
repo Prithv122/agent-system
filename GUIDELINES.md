@@ -58,7 +58,7 @@ Vendored code is pinned in `src/analyst/_vendor/__init__.py`.
 - [x] Arms A/B/C run and `report` gives EX, discordant pairs, McNemar p, bootstrap CI, cost per arm
 - [x] Safety suite: 0 writes executed, every adversarial request refused or rejected
 - [x] Explainer numbers checked against the result rows
-- [ ] Runs from a clean clone using only the documented steps
+- [x] Runs from a clean clone using only the documented steps
 - [x] Tests, lint and CI green; README results come from real runs
 
 ## Conventions

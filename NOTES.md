@@ -128,6 +128,15 @@ Differences from the hosted runner: Windows 11 instead of Ubuntu, `--basetemp` i
   depend on the prompt).
 - Fresh-clone replay: arms A/B/C rows byte-identical, report identical, faithfulness 26/26 cached.
 
+### Local CI record — 2026-10-25, commit `91e9a80` (after the results)
+
+Fresh clone, fresh install (`UV_NO_CACHE=1`, `SECRETS_NO_KEYRING=1`), the workflow's steps in order:
+ruff clean, **412 passed**, coverage 93%, build-db, golden 36 OK, ask / safety / eval / report with the
+scripted writer green. README section 6 run verbatim on a fresh clone of `f535ed3`: the committed
+cache imports (118 replies) and arms A/B/C replay to 9 / 9 / 10 of 36 with the same paired table,
+faithfulness 23/26. That clone also caught a test still expecting an unfrozen golden file (fixed in
+`91e9a80`). Hosted CI not run: no GitHub repo, Actions limit until 2026-11-02.
+
 ---
 
 ## Rejected approaches
