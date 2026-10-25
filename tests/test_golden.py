@@ -240,14 +240,18 @@ def test_real_golden_set_flags_pivots_and_enumerated_columns() -> None:
     assert not questions["date_spine-2"].column_order_matters  # one column
 
 
-def test_real_golden_file_only_gained_the_new_key_on_34_questions() -> None:
+def test_real_golden_file_is_frozen_with_the_expected_keys() -> None:
     lines = REAL_GOLDEN.read_text(encoding="utf-8").splitlines()
     old = ["qid", "question", "pattern", "reference_sql", "order_matters", "tags", "example"]
     for line in lines:
         data = json.loads(line)
-        keys = list(data)
-        assert keys == old or keys == [*old, "column_order_matters"]
+        keys = sorted(data)
+        assert keys in (
+            sorted([*old, "expected_digest"]),
+            sorted([*old, "column_order_matters", "expected_digest"]),
+        )
         assert data.get("column_order_matters", True) is True  # only ever written as true
+        assert len(data["expected_digest"]) == 64  # frozen 2026-10-25: every question has a digest
     assert sum("column_order_matters" in json.loads(x) for x in lines) == 34
     assert bytes([13]) not in REAL_GOLDEN.read_bytes()
 
