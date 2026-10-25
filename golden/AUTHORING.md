@@ -1,9 +1,9 @@
 # Golden set authoring notes
 
-> **Reviewed by the owner 2026-10-25: structure approved, sessionization-1/-2 revised. Not frozen yet:
-> freezing waits for the pre-freeze review report (`PRE_FREEZE_REVIEW.md`) and the owner's confirmation.**
+> **Reviewed by the owner 2026-10-25: structure approved, sessionization-1/-2 revised. FROZEN
+> 2026-10-25** after the owner confirmed `PRE_FREEZE_REVIEW.md`.
 >
-> `questions.jsonl` has no `expected_digest` yet. Freeze it only after sign-off, against the seeded
+> `questions.jsonl` carries an `expected_digest` per question, frozen against the seeded
 > warehouse (seed 20260830: 400 customers, 48 products, 35 employees, 3,000 orders, 9,001 order
 > lines, 12,301 page events, 530 subscription periods). Any later edit to a question, a reference
 > query or the equality rule invalidates a real run.

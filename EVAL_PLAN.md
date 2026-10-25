@@ -1,10 +1,11 @@
 # Evaluation plan — does the validate-and-repair loop raise execution accuracy?
 
-**Status: DECIDED 2026-10-25, NOT YET SIGNED.** The owner's review decisions of 2026-10-25 are
-written in below. Signing waits for the pre-freeze review report (`golden/PRE_FREEZE_REVIEW.md`) and
-the owner's confirmation of the final configuration. Once signed, this file is frozen before the
-first real model call on a held-out golden question; later changes go in a dated amendment at the
-end that says what was known when it was written. No rule changes after any accuracy result is seen.
+**Status: FROZEN AND SIGNED 2026-10-25**, before any real model call on a golden question. The
+owner confirmed `golden/PRE_FREEZE_REVIEW.md` as written. The golden set is frozen with a result
+digest per question (`golden/questions.jsonl`, sha256
+`31d5df3bfc32def01b776ea93b3ccbc9f74af58713ceb50c0988c124ce826b6d`). Nothing below changes after
+this commit except through a dated amendment at the end that says what was known when it was
+written. The protocol is not altered after any result is observed.
 
 ## 1 Question
 
@@ -34,9 +35,11 @@ calls, tokens and latency?
 | B | 2 | guard / `EXPLAIN` / engine error text shown to the writer |
 | C | 3 | same as B |
 
-- Arm A is one shot: no repair. B allows one repair, C two (attempts <= 3, as in the approved brief).
+- Arm A is one shot: no repair. B allows one repair, C two (3 total attempts, as in the approved
+  brief; confirmed by the owner 2026-10-25).
   A repair is triggered only by deterministic feedback: the `EXPLAIN` or engine error text, or the
-  protocol message "the reply did not contain a query". The writer never sees the reference answer
+  protocol message "the reply did not contain a query" (unparseable replies stay eligible for this
+  feedback, owner decision 2026-10-25). The writer never sees the reference answer
   or anything derived from it; the scorer alone knows the gold result. A silent wrong answer (valid
   SQL, wrong rows) gets no feedback and stays wrong: the loop is measured as it would run in use.
 - Same model, prompt, temperature 0 and JSON mode in every arm. Writer prompts are identical for
@@ -69,7 +72,10 @@ calls, tokens and latency?
   `status = 'Cancelled'` against data holding `'cancelled'`: valid SQL, wrong answer, nothing for
   the loop to repair. Every arm's schema text lists the distinct values of each text column with at
   most 12 distinct non-null values, derived mechanically from the database (`schema.value_hint_set`),
-  never chosen per question. The exact hint set and its sha256 go in each run's sidecar. Primary runs
+  never chosen per question. The exact hint set and its sha256 go in each run's sidecar. At freeze
+  the set is 7 columns (`customers.country`, `customers.segment`, `employees.title`, `orders.status`,
+  `page_events.page`, `products.category`, `subscriptions.plan`; sha256 `31aa2ee4…71e7c`);
+  `employees.title` is kept (owner decision 2026-10-25). Primary runs
   use `--value-hints`; a run without hints is a secondary analysis.
 - **Lenient parsing, same for every arm:** a reply that is not JSON but contains a fenced SQL block
   is accepted as SQL.
@@ -116,11 +122,22 @@ calls, tokens and latency?
 ## 7 Sign-off
 
 - [x] Golden set structure approved; sessionization-1/-2 revision required (owner, 2026-10-25)
-- [ ] Pre-freeze review report accepted (`golden/PRE_FREEZE_REVIEW.md`)
+- [x] Pre-freeze review report accepted as written (`golden/PRE_FREEZE_REVIEW.md`) (owner, 2026-10-25)
 - [x] Primary model: `qwen-coder-7b` (owner, 2026-10-25)
 - [x] Column order: positional on the questions that list columns (owner, 2026-10-25)
 - [x] Value hints: on, mechanical, identical across arms, recorded (owner, 2026-10-25)
 - [x] Decision rule: C > A with paired 95% CI excluding 0; +10 pts reported separately (owner, 2026-10-25)
-- [ ] Final configuration confirmed, golden set frozen
+- [x] Final configuration confirmed: C = 3 attempts, `employees.title` in the hints, unparseable
+      replies get repair feedback (owner, 2026-10-25)
+- [x] Golden set frozen: 36 digests, `analyst golden` 36 OK, `golden/crosscheck.py` 36/36
 
-Signed: ________ (owner) · Date: ________
+Signed: Prithvi M (owner, confirmed in writing 2026-10-25) · Date: 2026-10-25
+
+Run commands, in this order, one at a time:
+
+```bash
+uv run analyst eval --arm A --model qwen-coder-7b --value-hints --out results/runs
+uv run analyst eval --arm B --model qwen-coder-7b --value-hints --out results/runs
+uv run analyst eval --arm C --model qwen-coder-7b --value-hints --out results/runs
+uv run analyst report results/runs/qwen-coder-7b/armA.jsonl results/runs/qwen-coder-7b/armB.jsonl results/runs/qwen-coder-7b/armC.jsonl --out results/report.md
+```

@@ -1,8 +1,8 @@
 # Pre-freeze review report — golden set and evaluation configuration
 
-**Date:** 2026-10-25 · **Status: NOT FROZEN, NOT SIGNED.** Nothing below has been run on a real model
-against the golden set. Freezing (`analyst golden --freeze`), signing `EVAL_PLAN.md` and running arms
-A/B/C all wait for the owner to confirm this report.
+**Date:** 2026-10-25 · **Status: CONFIRMED by the owner 2026-10-25 as written; golden set frozen and EVAL_PLAN signed
+before any real model call on the golden set.** Final choices: C = 3 attempts (2 repairs),
+`employees.title` kept in the hints, unparseable replies keep repair feedback.
 
 ## 1 Edits made after the owner's review
 
