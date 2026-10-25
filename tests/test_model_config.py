@@ -130,7 +130,7 @@ def test_vendored_ollama_sends_no_seed_so_the_record_says_null() -> None:
     assert "seed" not in {f.name for f in dataclasses.fields(OllamaProvider)}
 
 
-def test_fetch_digest_reads_api_tags_with_a_short_timeout() -> None:
+def test_fetch_digest_reads_api_tags_with_a_bounded_timeout() -> None:
     payload = {
         "models": [
             {"name": "llama3.2:3b", "model": "llama3.2:3b", "digest": DIGEST_B},
@@ -155,7 +155,7 @@ def test_fetch_digest_reads_api_tags_with_a_short_timeout() -> None:
 
     got = REAL_FETCH("http://h:1", "qwen2.5-coder:7b-instruct-q3_K_M", opener=opener)
     assert got == DIGEST_A
-    assert seen == {"url": "http://h:1/api/tags", "timeout": 3.0}
+    assert seen == {"url": "http://h:1/api/tags", "timeout": 15.0}
 
 
 @pytest.mark.parametrize("failure", [OSError("down"), TimeoutError(), ValueError("bad json")])

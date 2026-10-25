@@ -96,12 +96,15 @@ def fetch_ollama_digest(
     host: str,
     model_id: str,
     *,
-    timeout: float = 3.0,
+    timeout: float = 15.0,
     opener: Callable[..., Any] = urllib.request.urlopen,
 ) -> str | None:
     """``GET {host}/api/tags`` and return the digest of ``model_id``; None when the server cannot
     be reached, answers badly, or does not list the model. ``opener`` is injectable so tests
-    never touch a network."""
+    never touch a network.
+
+    The timeout is generous on purpose: on Windows ``localhost`` tries IPv6 first and falls back to
+    IPv4, which took 3.6 s here, so a 3 s limit silently reported "no digest"."""
     try:
         with opener(f"{host}/api/tags", timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
