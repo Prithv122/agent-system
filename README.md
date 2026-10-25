@@ -150,14 +150,20 @@ uv run analyst eval --arm C --model qwen-7b --out results/runs
 uv run analyst report results/runs/qwen-7b/armA.jsonl results/runs/qwen-7b/armC.jsonl
 ```
 
-Arms run one after another (a lock enforces it) so the cache serves arm A's first reply to B and C.
-To publish a run so it replays from a clean clone:
+**Reproduce the published numbers offline** (no model, no Ollama needed): import the committed
+replies and replay the three arms into a scratch folder, then compare with `results/report.md`.
 
 ```bash
-uv run analyst cache export results/cache/llm.jsonl
 uv run analyst cache import results/cache/llm.jsonl
-uv run analyst eval --arm C --model qwen-coder-7b --replay
+uv run analyst eval --arm A --model qwen-coder-7b --value-hints --replay --out replay
+uv run analyst eval --arm B --model qwen-coder-7b --value-hints --replay --out replay
+uv run analyst eval --arm C --model qwen-coder-7b --value-hints --replay --out replay
+uv run analyst report replay/qwen-coder-7b/armA.jsonl replay/qwen-coder-7b/armB.jsonl replay/qwen-coder-7b/armC.jsonl
+uv run analyst faithfulness results/runs/qwen-coder-7b/armC.traces.jsonl --model qwen-coder-7b --replay
 ```
+
+Arms run one after another (a lock enforces it), so the cache serves arm A's first reply to B and
+C. After a new live run, `uv run analyst cache export results/cache/llm.jsonl` writes the bundle.
 
 Hosted models read `OPENROUTER_API_KEY` or `ANTHROPIC_API_KEY` from the environment (or the OS
 credential store with the `secrets` extra). `--replay` serves every call from the cache and fails on

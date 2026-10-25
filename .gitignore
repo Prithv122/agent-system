@@ -47,3 +47,4 @@ Thumbs.db
 
 # LLM response cache (a committed replay bundle lives under results/)
 .cache/
+replay/
