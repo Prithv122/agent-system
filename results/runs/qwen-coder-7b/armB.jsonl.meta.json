@@ -1,0 +1,75 @@
+{
+  "model": "qwen-coder-7b",
+  "arm": "B",
+  "max_attempts": 2,
+  "explain": false,
+  "value_hints": true,
+  "model_config": {
+    "provider": "ollama",
+    "model": "qwen2.5-coder:7b-instruct-q3_K_M",
+    "temperature": 0.0,
+    "max_tokens": 1024,
+    "json_object": true,
+    "num_ctx": 8192,
+    "seed": null,
+    "digest": "bb739a02927ef1dd238b0fa05813c8fe1d87cc793abdfaa30349cf7265135ecf"
+  },
+  "golden_sha256": "31d5df3bfc32def01b776ea93b3ccbc9f74af58713ceb50c0988c124ce826b6d",
+  "questions": 36,
+  "resumed_rows": 0,
+  "unfrozen_questions": 0,
+  "started_utc": "2026-10-25T00:59:49+00:00",
+  "finished_utc": "2026-10-25T01:07:27+00:00",
+  "value_hints_set": {
+    "customers.country": [
+      "AU",
+      "DE",
+      "GB",
+      "IN",
+      "SG",
+      "US"
+    ],
+    "customers.segment": [
+      "consumer",
+      "enterprise",
+      "smb"
+    ],
+    "employees.title": [
+      "Analyst",
+      "CEO",
+      "Manager",
+      "VP"
+    ],
+    "orders.status": [
+      "cancelled",
+      "completed",
+      "returned"
+    ],
+    "page_events.page": [
+      "/",
+      "/account",
+      "/cart",
+      "/category",
+      "/checkout",
+      "/product",
+      "/search",
+      "/support"
+    ],
+    "products.category": [
+      "Audio",
+      "Cameras",
+      "Computing",
+      "Gaming",
+      "Home",
+      "Mobile",
+      "Networking",
+      "Wearables"
+    ],
+    "subscriptions.plan": [
+      "basic",
+      "plus",
+      "premium"
+    ]
+  },
+  "value_hints_sha256": "31aa2ee4ecb4c5c72a36445ddf083356d0fa8da6416f860eb7dd45f494171e7c"
+}
