@@ -141,3 +141,21 @@ uv run analyst eval --arm B --model qwen-coder-7b --value-hints --out results/ru
 uv run analyst eval --arm C --model qwen-coder-7b --value-hints --out results/runs
 uv run analyst report results/runs/qwen-coder-7b/armA.jsonl results/runs/qwen-coder-7b/armB.jsonl results/runs/qwen-coder-7b/armC.jsonl --out results/report.md
 ```
+
+## Amendments
+
+**A1 — 2026-10-25, tooling only; no rule, prompt, question or scoring change.**
+
+- Before any model call (`50fd490`, after the freeze commit `870570d`): the Ollama digest lookup's
+  timeout went from 3 s to 15 s. On Windows `localhost` falls back from IPv6 and answered in 3.6 s,
+  so the pin check reported "no digest" and refused to start. Known at the time: nothing; no model
+  had been called.
+- After the A/B/C results were known (`f82fe6e`): the faithfulness pass (section 6, secondary)
+  builds the explainer prompt from the result rows recorded in the trace instead of re-running the
+  SQL. Reason: a model query without a full `ORDER BY` returned rows in a different order on re-run,
+  so 6 of 26 prompts missed the replay cache. Known at the time: the first live pass gave 23/26; the
+  rerun with the fix gave the same 23/26 with the same three flags. Both runs are committed
+  (`results/faithfulness_armC_run1.jsonl`, `results/faithfulness_armC.jsonl`). EX scoring was checked
+  for the same effect: re-executing every arm's final SQL 5 times changed no score.
+- Results: README section 5 and `results/report.md`.
+

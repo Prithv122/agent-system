@@ -102,6 +102,32 @@ Differences from the hosted runner: Windows 11 instead of Ubuntu, `--basetemp` i
   36 OK, ask / safety / eval / report with the scripted writer green. Same differences from the
   hosted runner as before.
 
+### 2026-10-25 — the pre-registered run
+
+- Frozen and signed at `870570d`; arms run sequentially (A 26 min, B 8 min, C 6 min of wall time;
+  B and C re-used A's cached first replies, as designed). One false start: arm B refused to begin
+  because the digest lookup timed out right after arm A; no model had been called, retry was clean.
+- **EX: A 9/36, B 9/36, C 10/36.** C − A = +2.8 pts [0.0, +8.3]; McNemar 0 vs 1, p = 1.0. Primary
+  hypothesis not supported; practical target not met.
+- **Why:** 15 of A's 27 failures were silent (valid SQL, wrong rows). Of the 10 `EXPLAIN` failures,
+  C fixed 1 to correct and 1 to runnable-but-wrong; **6 ended with the writer using `refuse` to
+  describe the error** ("The query uses a function 'TO_CHAR' which is not available in DuckDB...")
+  instead of returning fixed SQL. The 7B model reads "refuse" as "explain". One guard refusal was a
+  parse error (`ORDER BY` before `UNION ALL` inside a recursive CTE): the vendored guard turns a
+  parse failure into `UnsafeQuery`, and the protocol ends a question on a guard refusal.
+- Both are protocol artefacts that hold the loop back, found after results, so they are recorded and
+  not changed. A follow-up would be a second pre-registered run: refusal allowed only on the first
+  attempt, and parse errors routed to the repair path.
+- **Faithfulness:** 23/26 by rule; the 3 flags are false positives of the checker (dates in words,
+  list numbering), confirmed by reading the rows. A real slip a number check cannot see: "lapse
+  ended on" used for the subscription's end date.
+- **Replay broke twice, and both were real:** (1) faithfulness re-ran the model's SQL, whose row
+  order is not fixed without `ORDER BY` (parallel aggregation), so the explainer prompt changed;
+  fixed by using the recorded rows (Amendment A1). (2) 4 model-mode safety requests embed a per-run
+  temp path, so their prompts can never replay; recorded, not fixed (the effect check does not
+  depend on the prompt).
+- Fresh-clone replay: arms A/B/C rows byte-identical, report identical, faithfulness 26/26 cached.
+
 ---
 
 ## Rejected approaches
@@ -116,7 +142,8 @@ Differences from the hosted runner: Windows 11 instead of Ubuntu, `--basetemp` i
 
 ## Open questions
 
-- [ ] Owner review of the golden set (`golden/AUTHORING.md`); sessionization-1/-2 hinge on one
-      exact-30-minute gap
-- [ ] Owner sign-off on `EVAL_PLAN.md` (primary model, column-order rule, threshold)
+- [x] Owner review of the golden set (done 2026-10-25; sessionization-1/-2 revised)
+- [x] Owner sign-off on `EVAL_PLAN.md` (signed 2026-10-25, `870570d`)
+- [ ] A second pre-registered run with the two artefacts fixed (refuse only on attempt 1; parse
+      errors repairable) — a separate experiment, not a re-scoring of this one
 - [ ] TPC-H transfer set (needs the `tpch` extension download) — not started

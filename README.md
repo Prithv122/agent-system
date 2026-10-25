@@ -6,9 +6,9 @@
 
 [![CI](https://github.com/Prithv122/agent-system/actions/workflows/ci.yml/badge.svg)](https://github.com/Prithv122/agent-system/actions/workflows/ci.yml)
 
-**Status:** built and tested end to end with a scripted writer. **No real-model result yet**: the
-golden set is awaiting owner review and the evaluation plan is unsigned, so section 5 has no
-accuracy numbers.
+**Result (pre-registered, local 7B model):** the repair loop did **not** measurably raise accuracy —
+25.0% one-shot vs 27.8% with up to three attempts (+2.8 points, 95% CI [0.0, +8.3]). Most wrong
+answers were valid SQL with wrong rows, which no database error can flag. Every number replays offline.
 **Live demo:** not deployed — runs locally.
 **Stack:** Python 3.12 · DuckDB · stdlib HTTP providers (Ollama, OpenRouter, Anthropic) with an
 on-disk replay cache · no agent framework.
@@ -83,17 +83,51 @@ flowchart LR
 
 ## 5. Results
 
-**Pending.** No real model has been run on the golden set. The plan that decides what counts as
-"the loop helps" is pre-registered in [`EVAL_PLAN.md`](EVAL_PLAN.md) and is signed before the first
-real call; every number here will replay offline from a committed cache.
+Pre-registered in [`EVAL_PLAN.md`](EVAL_PLAN.md), frozen and signed at commit `870570d` before any
+real model call on the golden set. Model: local `qwen2.5-coder:7b-instruct-q3_K_M` (Ollama digest
+`bb739a02927e…`), temperature 0, value hints on in every arm. 36 questions, 12 SQL patterns x 3, on
+a **small synthetic warehouse**: read these as a measurement of this loop with this model, not as
+a general text-to-SQL benchmark.
 
-What is measured today, with the scripted writer (deterministic, no model):
+| Arm | Writer attempts | EX (correct / 36) | Mean writer calls | Mean tokens | Median model time per question |
+|---|---|---|---|---|---|
+| A | 1 (no repair) | **9 (25.0%)** | 1.00 | 702 | 37 s |
+| B | 2 (1 repair) | **9 (25.0%)** | 1.31 | 1,000 | 45 s |
+| C | 3 (2 repairs) | **10 (27.8%)** | 1.47 | 1,217 | 45 s |
+
+- **Primary hypothesis — not supported.** EX(C) − EX(A) = **+2.8 points, 95% paired bootstrap CI
+  [0.0, +8.3]** (10,000 resamples of questions). The interval does not exclude 0. Discordant pairs
+  0 vs 1, exact McNemar p = 1.0. The +10-point practical target is not met either.
+- **Cost of the loop:** arm C made 47% more writer calls and 73% more tokens than arm A for one more
+  correct answer.
+
+**Why the loop could not help much here** (descriptive, from the traces):
+
+| What went wrong in arm A (27 of 36) | Count | What the loop did with it in arm C |
+|---|---|---|
+| Valid SQL, wrong rows (wrong values 8, wrong grain 7) | 15 | Nothing: no error is raised, so there is nothing to repair. Still wrong in C |
+| `EXPLAIN` / parser error | 10 | 1 repaired to correct, 1 repaired to runnable-but-wrong, 2 still failing, **6 ended with the writer using `refuse` to describe the error instead of fixing it** |
+| Runtime error | 1 | Not repaired |
+| Guard refusal | 1 | Ends the question by design; this one was a syntax error the guard reports as "could not parse" |
+
+The ceiling for any repair loop on this run was the 11 errors the database reports (+30.6 points);
+the loop recovered one of them. The binding constraint is silent semantic errors, which only a
+check that knows the intended answer could catch, and the agent is deliberately not given one.
+
+**Other measurements**
 
 | Check | Result |
 |---|---|
-| Adversarial suite (35 cases) | 0 writes, 0 reads outside the database, database file hash unchanged. 24 stopped by the guard; 5 passed the guard and were stopped by the locked connection (local and network file reads); 6 allowed and harmless (2 controls, a no-op checkpoint, and 3 engine-metadata reads, one of which discloses the database file path) |
-| Golden set | `analyst golden`: all 36 reference queries pass the guard and run on the read-only connection, with 1–55 rows each (draft; digests are frozen after review) |
-| Arms on 6 example questions, scripted faults | The pipeline separates arms as designed (a pipeline check, not a result) |
+| Safety suite, primary model (35 cases) | **0 writes, 0 reads outside the database, database file hash unchanged: PASS.** The model sees only the request text: 28 requests ended with no query run (a refusal or no usable SQL), 1 was stopped by the guard, and for 6 the model wrote a harmless read-only query instead of the write |
+| Safety suite, scripted writer (CI) | Same effects verdict: 24 stopped by the guard, 5 file/network reads passed the guard and were stopped by the locked connection, 6 harmless |
+| Explainer faithfulness, arm C's 26 runnable answers | 23/26 pass the deterministic number check. All 3 flags are checker false positives (days of dates written in words, list numbering); every stated number matches the rows on manual reading. One explanation mislabels a column ("lapse ended" for the subscription's end), which a number check cannot see |
+| Golden set integrity | 36 references recomputed independently in plain Python (36/36); scorer audited on 575 rewritten results (0 surprises) |
+| Reproducibility | 118 model replies committed (`results/cache/llm.jsonl`). From a fresh clone, arms A/B/C replay **byte-identically** and the report regenerates unchanged; faithfulness replays fully; model-mode safety replays 31/35 (4 requests embed a per-run temp path) |
+
+**Observed after the results, not confirmatory** (each would need its own pre-registered run):
+the 7B writer misuses the `refuse` action as a way to explain an error; and a parse error caught
+by the guard ends the question instead of being repairable. Both would raise B and C, but neither
+touches the 15 silent errors.
 
 ## 6. How to run
 
