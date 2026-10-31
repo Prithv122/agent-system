@@ -137,6 +137,24 @@ cache imports (118 replies) and arms A/B/C replay to 9 / 9 / 10 of 36 with the s
 faithfulness 23/26. That clone also caught a test still expecting an unfrozen golden file (fixed in
 `91e9a80`). Hosted CI not run: no GitHub repo, Actions limit until 2026-11-02.
 
+### 2026-11-01 — published; first hosted run red, fixed
+
+- Published as public `Prithv122/agent-system`, `main` = `f217e8e`. Hosted run 41234573188 on that
+  SHA **failed** at the last step: `eval --out <dir>` files runs under `<dir>/<model>/` since the
+  review fixes, but the workflow's `report` line still read `<dir>/armA.jsonl`. Every earlier step
+  (lint, 412 tests, build-db, golden, ask, safety) passed on Ubuntu.
+- **Why local CI missed it:** the three earlier replays typed the eval/report commands by hand with
+  the correct `fake/` path instead of running the workflow file. Fixed in `93e3747`. From now on the
+  replay runs a script generated from the workflow's own `run:` blocks.
+- Verbatim replay of `93e3747` on a fresh clone (script extracted from `ci.yml`; only
+  `PYTEST_ADDOPTS=--basetemp` and `RUNNER_TEMP` set locally): ruff clean, **412 passed**, coverage
+  93%, build-db, golden 36 OK, ask ok, safety PASS, fake arms A/C and report green.
+- A clone pulled from GitHub at `f217e8e` (104 files) passes the README steps and replays A/B/C to
+  9 / 9 / 10 of 36.
+- Known and accepted: 4 safety prompts in `results/cache/llm.jsonl` carry the local temp path (with
+  the Windows user name); they cannot replay anyway, and rewriting history would change SHAs cited
+  in these notes.
+
 ---
 
 ## Rejected approaches
