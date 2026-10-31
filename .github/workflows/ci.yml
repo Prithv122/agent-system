@@ -51,4 +51,4 @@ jobs:
         run: |
           uv run analyst eval --arm A --fake --golden tests/fixtures/example.jsonl --out "$RUNNER_TEMP/runs"
           uv run analyst eval --arm C --fake --golden tests/fixtures/example.jsonl --out "$RUNNER_TEMP/runs"
-          uv run analyst report "$RUNNER_TEMP/runs/armA.jsonl" "$RUNNER_TEMP/runs/armC.jsonl"
+          uv run analyst report "$RUNNER_TEMP/runs/fake/armA.jsonl" "$RUNNER_TEMP/runs/fake/armC.jsonl"
